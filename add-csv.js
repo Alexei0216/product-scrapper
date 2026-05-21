@@ -1,17 +1,21 @@
 const fs = require("fs");
 
 const csvDefaults = {
-  category: "Sistema de refrigeración > Racing Radiators",
-  productBrand: "FMIC performance",
+  category: "Suspencion > Copelas regulables",
+  productBrand: "PMC Motorsport",
   carBrand: "VAG",
 };
 
 function addPriceMarkup(price, markup) {
-  const value = Number(String(price || "").replace(/,/g, ""));
+  const value = Number(
+    String(price || "")
+      .replace(/\./g, "")
+      .replace(",", ".") 
+  );
 
   if (!Number.isFinite(value)) return price || "";
 
-  return (value + markup).toFixed(2);
+  return (value + markup).toFixed(2).replace(".", ",");
 }
 
 function toCSV(products) {
