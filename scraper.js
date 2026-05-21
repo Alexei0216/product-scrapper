@@ -46,6 +46,8 @@ function downloadImage(url, filename) {
 
 async function collectProductLinks(browser) {
   const links = new Set();
+  const duplicateLinks = new Map();
+  let foundLinksCount = 0;
 
   if (!config.listPages || config.listPages.length === 0) {
     console.log("ℹ️  Нет страниц каталога. Используются ссылки из pages.");
@@ -78,7 +80,15 @@ async function collectProductLinks(browser) {
 
       console.log(`✔ Найдено товаров: ${productLinks.length}`);
 
-      productLinks.forEach((link) => links.add(link));
+      foundLinksCount += productLinks.length;
+
+      productLinks.forEach((link) => {
+        if (links.has(link)) {
+          duplicateLinks.set(link, (duplicateLinks.get(link) || 1) + 1);
+        }
+
+        links.add(link);
+      });
       await page.close();
     } catch (err) {
       console.log("❌ Ошибка при загрузке каталога:", catalogUrl, err.message);
@@ -86,7 +96,16 @@ async function collectProductLinks(browser) {
   }
 
   const allLinks = [...links, ...config.pages];
-  console.log(`📦 Всего товаров для обработки: ${allLinks.length}`);
+  console.log(`📦 Найдено ссылок всего: ${foundLinksCount}`);
+  console.log(`📦 Уникальных товаров для обработки: ${allLinks.length}`);
+
+  if (duplicateLinks.size > 0) {
+    console.log(`ℹ️  Повторяющихся ссылок пропущено: ${foundLinksCount - links.size}`);
+
+    for (const [link, count] of duplicateLinks) {
+      console.log(`   ${count}x ${link}`);
+    }
+  }
 
   return allLinks;
 }
@@ -195,9 +214,6 @@ async function scrape() {
         description: cleanHtml(product.description),
         images: product.images,
         localImages,
-        category: config.defaults.category,
-        brand: config.defaults.brand,
-        carBrand: config.defaults.carBrand,
       });
     } catch (err) {
       console.log("❌ Error on:", url, err.message);

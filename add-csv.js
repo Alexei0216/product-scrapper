@@ -1,7 +1,12 @@
 const fs = require("fs");
 
+const csvDefaults = {
+  category: "Sistema de refrigeración > Racing Radiators",
+  productBrand: "FMIC performance",
+  carBrand: "VAG",
+};
+
 function addPriceMarkup(price, markup) {
-  // Remove all commas (thousands separators) and parse the decimal
   const value = Number(String(price || "").replace(/,/g, ""));
 
   if (!Number.isFinite(value)) return price || "";
@@ -18,11 +23,11 @@ function toCSV(products) {
     "Name",
     "Regular price",
     "SKU",
-    "Performance intercooler kits",
+    "Categories",
     "Description",
     "Images",
-    "FMIC performance",           // Таксономия марка
-    "VAG"         // Таксономия марка машины
+    "taxonomy=product_brand",
+    "taxonomy=car_brand"
   ];
 
   const rows = products.map(p => [
@@ -33,11 +38,11 @@ function toCSV(products) {
     p.name,
     addPriceMarkup(p.price, 25),
     p.sku,
-    p.category || "",
+    csvDefaults.category,
     p.description,
     Array.isArray(p.images) ? p.images.join(", ") : "",
-    p.brand || "",
-    p.carBrand || ""
+    csvDefaults.productBrand,
+    csvDefaults.carBrand
   ]);
 
   const csv = [header, ...rows]
