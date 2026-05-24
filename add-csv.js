@@ -1,65 +1,114 @@
 const fs = require("fs");
+const path = require("path");
+const config = require("./config");
 
-const csvDefaults = {
-  category: "Suspencion > Copelas regulables",
-  productBrand: "PMC Motorsport",
-  carBrand: "VAG",
-};
+function normalizePrice(price) {
+  const raw = String(price || "").trim();
+  if (!raw) return "";
 
-function addPriceMarkup(price, markup) {
   const value = Number(
-    String(price || "")
-      .replace(/\./g, "")
-      .replace(",", ".") 
+    raw
+      .replace(/[^\d,.-]/g, "")
+      .replace(/\.(?=\d{3}(\D|$))/g, "")
+      .replace(",", ".")
   );
 
-  if (!Number.isFinite(value)) return price || "";
-
-  return (value + markup).toFixed(2).replace(".", ",");
+  return Number.isFinite(value) ? value : "";
 }
 
-function toCSV(products) {
+function addPriceMarkup(price, markup) {
+  const value = normalizePrice(price);
+  if (value === "") return "";
+
+  return (value + Number(markup || 0)).toFixed(2);
+}
+
+function csvCell(value) {
+  return `"${String(value || "").replace(/"/g, '""')}"`;
+}
+
+function productText(product) {
+  return product.description || product.shortDescription || product.name || "";
+}
+
+function stockValues(stockMode) {
+  if (stockMode === "instock") {
+    return {
+      inStock: "1",
+      backorders: "no",
+      status: "instock",
+    };
+  }
+
+  if (stockMode === "outofstock") {
+    return {
+      inStock: "0",
+      backorders: "no",
+      status: "outofstock",
+    };
+  }
+
+  return {
+    inStock: "1",
+    backorders: "notify",
+    status: "onbackorder",
+  };
+}
+
+function toCSV(products, options = {}) {
+  const defaults = {
+    ...config.csvDefaults,
+    ...(options.defaults || {}),
+  };
+  const outputFile = options.outputFile || path.resolve("products.csv");
+
   const header = [
     "Type",
-    "Published",
-    "In stock?",
-    "Visibility in catalog",
-    "Name",
-    "Regular price",
     "SKU",
-    "Categories",
+    "Name",
+    "Published",
+    "Short description",
     "Description",
+    "Regular price",
+    "Categories",
     "Images",
+    "In stock?",
+    "Backorders allowed?",
+    "Stock status",
     "taxonomy=product_brand",
-    "taxonomy=car_brand"
+    "taxonomy=car_brand",
   ];
 
-  const rows = products.map(p => [
-    "simple",
-    "1",
-    "1",
-    "visible",
-    p.name,
-    addPriceMarkup(p.price, 25),
-    p.sku,
-    csvDefaults.category,
-    p.description,
-    Array.isArray(p.images) ? p.images.join(", ") : "",
-    csvDefaults.productBrand,
-    csvDefaults.carBrand
-  ]);
+  const rows = products.map((product) => {
+    const text = productText(product);
+    const stock = stockValues(defaults.stockMode);
+
+    return [
+      "simple",
+      product.sku,
+      product.name,
+      "1",
+      product.shortDescription || text,
+      text,
+      addPriceMarkup(product.price, defaults.priceMarkup),
+      defaults.category || product.categories,
+      Array.isArray(product.images) ? product.images.join(", ") : "",
+      stock.inStock,
+      stock.backorders,
+      stock.status,
+      defaults.productBrand,
+      defaults.carBrand,
+    ];
+  });
 
   const csv = [header, ...rows]
-    .map(row =>
-      row
-        .map(v => `"${(v || "").replace(/"/g, '""')}"`)
-        .join(",")
-    )
+    .map((row) => row.map(csvCell).join(","))
     .join("\n");
 
-  fs.writeFileSync("products.csv", csv);
+  fs.mkdirSync(path.dirname(outputFile), { recursive: true });
+  fs.writeFileSync(outputFile, `${csv}\n`, "utf8");
 
-  console.log("✔ CSV saved: products.csv");
+  return outputFile;
 }
 
 module.exports = toCSV;
