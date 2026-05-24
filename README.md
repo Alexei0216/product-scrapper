@@ -57,6 +57,7 @@ The bot will show an inline setup panel where you can choose:
 - WooCommerce category.
 - Product brand taxonomy.
 - Car brand taxonomy.
+- Car model taxonomy.
 - Stock mode: in stock, preorder/backorder, or out of stock.
 - How many archive pages to scan.
 - Product limit for this run.
@@ -87,20 +88,28 @@ All production settings are in `.env`:
 
 - `TELEGRAM_BOT_TOKEN` - token from `@BotFather`.
 - `ALLOWED_CHAT_IDS` - optional comma-separated Telegram chat ids.
+- `TELEGRAM_REQUEST_TIMEOUT_MS` - timeout for normal Telegram API calls.
+- `TELEGRAM_LONG_POLL_TIMEOUT_MS` - timeout for Telegram long polling requests.
+- `TELEGRAM_RETRY_ATTEMPTS` - retry count for temporary Telegram network errors.
 - `SCRAPER_MAX_PRODUCTS` - max products per link.
 - `SCRAPER_MAX_ARCHIVE_PAGES` - how many archive/pagination pages to scan.
+- `SCRAPER_REQUEST_DELAY_MS` - small delay after page load; lower is faster, higher is gentler for slow sites.
+- `SCRAPER_PRODUCT_CONCURRENCY` - how many product pages are parsed in parallel.
 - `WC_DEFAULT_CATEGORY` - fallback WooCommerce category.
 - `WC_DEFAULT_PRODUCT_BRAND` - value for `taxonomy=product_brand`.
 - `WC_DEFAULT_CAR_BRAND` - value for `taxonomy=car_brand`.
+- `WC_DEFAULT_CAR_MODEL` - value for `taxonomy=car_model`.
 - `WC_PRICE_MARKUP` - fixed amount added to each parsed price.
 - `WC_DEFAULT_STOCK_MODE` - default stock mode: `instock`, `backorder`, or `outofstock`.
 - `WC_CATEGORIES` - semicolon-separated category buttons.
 - `WC_PRODUCT_BRANDS` - semicolon-separated product brand buttons.
 - `WC_CAR_BRANDS` - semicolon-separated car brand buttons.
+- `WC_CAR_MODELS` - semicolon-separated car model buttons.
 - `BOT_ARCHIVE_PAGE_OPTIONS` - semicolon-separated archive page presets.
 - `BOT_PRODUCT_LIMIT_OPTIONS` - semicolon-separated product limit presets.
+- `BOT_PRODUCT_CONCURRENCY_OPTIONS` - semicolon-separated parallel parsing presets.
 
-The `WC_CATEGORIES`, `WC_PRODUCT_BRANDS`, and `WC_CAR_BRANDS` values are only initial seed values.
+The `WC_CATEGORIES`, `WC_PRODUCT_BRANDS`, `WC_CAR_BRANDS`, and `WC_CAR_MODELS` values are only initial seed values.
 After the bot starts, manage dictionaries in Telegram:
 
 ```text
@@ -121,6 +130,7 @@ Optional initial example:
 WC_CATEGORIES=Uncategorized;Suspension > Copelas regulables;Brakes > Pads
 WC_PRODUCT_BRANDS=PMC Motorsport;BMW;Febi
 WC_CAR_BRANDS=VAG;BMW;Mercedes-Benz
+WC_CAR_MODELS=E36;E46;Golf 4
 ```
 
 The names should match existing WooCommerce categories/taxonomy terms if you want the import to attach products cleanly.

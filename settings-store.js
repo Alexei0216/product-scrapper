@@ -8,6 +8,7 @@ const defaults = {
   categories: config.options.categories,
   productBrands: config.options.productBrands,
   carBrands: config.options.carBrands,
+  carModels: config.options.carModels,
   archivePages: config.options.archivePages,
   productLimits: config.options.productLimits,
 };
@@ -21,6 +22,7 @@ function normalizeSettings(settings = {}) {
     categories: unique(settings.categories || defaults.categories),
     productBrands: unique(settings.productBrands || defaults.productBrands),
     carBrands: unique(settings.carBrands || defaults.carBrands),
+    carModels: unique(settings.carModels || defaults.carModels),
     archivePages: unique(settings.archivePages || defaults.archivePages).map(Number).filter(Boolean),
     productLimits: unique(settings.productLimits || defaults.productLimits).map(Number).filter(Boolean),
   };

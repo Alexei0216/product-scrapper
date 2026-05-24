@@ -1,6 +1,7 @@
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const config = require("./config");
 const toCSV = require("./add-csv");
 
@@ -37,15 +38,20 @@ function isLikelyProductUrl(url, archiveUrl, score = 0) {
 
     const lower = `${parsed.pathname}${parsed.search}`.toLowerCase();
     if (/\.(jpg|jpeg|png|webp|gif|svg|pdf|zip)(\?|$)/.test(lower)) return false;
-    if (/(cart|checkout|account|login|register|wishlist|compare|comparers|settings\.php|privacy|terms|contact|about|blog)(\/|=|$)/.test(lower)) {
+    if (/(cart|checkout|account|login|register|wishlist|compare|comparers|settings\.php|privacy|terms|contact|about|blog|search|filter)(\/|=|$)/.test(lower)) {
       return false;
     }
 
-    const productSignal = /(product|products|prod|item|shop|sku|p-|\/p\/|\d{3,}|\.html?$)/.test(lower);
-    const archiveSignal = /(category|catalog|collection|collections|tag|brand)(\/|=|$)/.test(lower);
+    const fileName = parsed.pathname.split("/").filter(Boolean).pop()?.toLowerCase() || "";
+    const knownNonProductPage = /^(tra|cat|menu|news|blog|brand|producer|search|filter)-/.test(fileName);
+    if (knownNonProductPage && !/^product-/.test(fileName)) return false;
 
-    if (archiveSignal && !productSignal && score < 5) return false;
-    return productSignal || score >= 5;
+    const strongProductSignal = /(^|\/)(product|products|prod|item|sku)(\/|-)|\/p\//.test(lower);
+    const weakProductSignal = /(^|\/)shop\/.+\d{3,}|\.html?$|\d{3,}/.test(lower);
+    const archiveSignal = /(category|catalog|collection|collections|tag|brand|vehicle|model)(\/|=|$)/.test(lower);
+
+    if (archiveSignal && !strongProductSignal && score < 10) return false;
+    return strongProductSignal || (weakProductSignal && score >= 5) || score >= 10;
   } catch {
     return false;
   }
@@ -98,8 +104,34 @@ function dedupeImageVariants(urls) {
   return [...byKey.values()];
 }
 
+function autoSkuFromUrl(url) {
+  return `AUTO-${crypto.createHash("sha1").update(url).digest("hex").slice(0, 12).toUpperCase()}`;
+}
+
 async function delay(ms) {
   if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function setupFastContext(browser) {
+  const context = await browser.newContext();
+  await context.route("**/*", (route) => {
+    const request = route.request();
+    const resourceType = request.resourceType();
+    const url = request.url();
+
+    if (["image", "media", "font", "stylesheet"].includes(resourceType)) {
+      route.abort().catch(() => {});
+      return;
+    }
+
+    if (/google-analytics|googletagmanager|facebook|doubleclick|hotjar|clarity|yandex|metrika/i.test(url)) {
+      route.abort().catch(() => {});
+      return;
+    }
+
+    route.continue().catch(() => {});
+  });
+  return context;
 }
 
 async function collectProductLinks(page, archiveUrl, options) {
@@ -253,6 +285,15 @@ async function extractProduct(page, url, options) {
     };
     const meta = (selector) => document.querySelector(selector)?.getAttribute("content") || "";
     const jsonProducts = [];
+    const imageUrlsFromValue = (value) => {
+      if (!value) return [];
+      if (typeof value === "string") return [value];
+      if (Array.isArray(value)) return value.flatMap(imageUrlsFromValue);
+      if (typeof value === "object") {
+        return imageUrlsFromValue(value.url || value.contentUrl || value["@id"]);
+      }
+      return [];
+    };
 
     const flatten = (value) => {
       const stack = Array.isArray(value) ? [...value] : [value];
@@ -301,7 +342,7 @@ async function extractProduct(page, url, options) {
       "";
 
     const imageValues = [
-      product.image,
+      ...imageUrlsFromValue(product.image),
       meta('meta[property="og:image"]'),
       ...Array.from(
         document.querySelectorAll(
@@ -399,7 +440,7 @@ async function extractProduct(page, url, options) {
     sourceUrl: url,
     name: cleanText(raw.name),
     price: cleanText(raw.price).replace(/[^\d.,-]/g, ""),
-    sku: cleanText(raw.sku) || `AUTO-${Buffer.from(url).toString("base64url").slice(0, 12)}`,
+    sku: cleanText(raw.sku) || autoSkuFromUrl(url),
     description: cleanHtml(raw.description),
     shortDescription: cleanText(raw.shortDescription),
     categories: cleanText(raw.categories),
@@ -421,6 +462,7 @@ async function scrape(input = {}) {
     maxArchivePages: input.maxArchivePages || config.scraper.maxArchivePages,
     navigationTimeoutMs: input.navigationTimeoutMs || config.scraper.navigationTimeoutMs,
     requestDelayMs: input.requestDelayMs ?? config.scraper.requestDelayMs,
+    productConcurrency: input.productConcurrency || config.scraper.productConcurrency,
     csvDefaults: input.csvDefaults || config.csvDefaults,
     progress: input.progress,
   };
@@ -431,10 +473,11 @@ async function scrape(input = {}) {
 
   fs.mkdirSync(options.outputDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
+  const context = await setupFastContext(browser);
   const products = [];
 
   try {
-    const page = await browser.newPage();
+    const page = await context.newPage();
     let productUrls = options.productUrls.length ? options.productUrls : [];
 
     if (productUrls.length === 0) {
@@ -473,42 +516,83 @@ async function scrape(input = {}) {
       total: productUrls.length,
     });
 
-    for (let index = 0; index < productUrls.length; index += 1) {
-      const url = productUrls[index];
-      const productPage = await browser.newPage();
+    let nextProductIndex = 0;
+    let completed = 0;
+    let saved = 0;
+    let skipped = 0;
+    let errors = 0;
+    const results = new Array(productUrls.length);
+    const concurrency = Math.max(1, Math.min(options.productConcurrency, productUrls.length || 1));
 
-      try {
+    async function worker() {
+      while (nextProductIndex < productUrls.length) {
+        const index = nextProductIndex;
+        nextProductIndex += 1;
+
+        const url = productUrls[index];
+        const productPage = await context.newPage();
+
         await options.progress?.({
-          stage: "product",
+          stage: "product_start",
           current: index + 1,
           total: productUrls.length,
           url,
+          active: Math.min(concurrency, productUrls.length - completed),
         });
-        const product = await extractProduct(productPage, url, options);
-        if (product.name && product.price) {
-          products.push(product);
-        } else {
+
+        try {
+          const product = await extractProduct(productPage, url, options);
+          if (product.name && product.price) {
+            results[index] = product;
+            saved += 1;
+          } else {
+            skipped += 1;
+            await options.progress?.({
+              stage: "skip",
+              current: completed + 1,
+              total: productUrls.length,
+              url,
+              reason: "нет названия или цены",
+              saved,
+              skipped,
+              errors,
+            });
+          }
+        } catch (error) {
+          errors += 1;
           await options.progress?.({
-            stage: "skip",
-            current: index + 1,
+            stage: "error",
+            current: completed + 1,
             total: productUrls.length,
             url,
-            reason: "нет названия или цены",
+            error: error.message,
+            saved,
+            skipped,
+            errors,
+          });
+        } finally {
+          completed += 1;
+          await productPage.close().catch(() => {});
+          await options.progress?.({
+            stage: "product_done",
+            current: completed,
+            total: productUrls.length,
+            url,
+            saved,
+            skipped,
+            errors,
+            active: Math.max(0, Math.min(concurrency, productUrls.length - completed)),
           });
         }
-      } catch (error) {
-        await options.progress?.({
-          stage: "error",
-          current: index + 1,
-          total: productUrls.length,
-          url,
-          error: error.message,
-        });
-      } finally {
-        await productPage.close();
       }
     }
+
+    if (productUrls.length > 0) {
+      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      products.push(...results.filter(Boolean));
+    }
   } finally {
+    await context.close().catch(() => {});
     await browser.close();
   }
 
@@ -524,8 +608,10 @@ async function scrape(input = {}) {
 module.exports = scrape;
 module.exports._internals = {
   collectProductLinks,
+  autoSkuFromUrl,
   isLikelyProductUrl,
   normalizeUrl,
+  setupFastContext,
 };
 
 if (require.main === module) {
@@ -542,7 +628,8 @@ if (require.main === module) {
 
       if (message.stage === "archive") console.log(`Архив ${message.current}/${message.total}: ${message.url}`);
       if (message.stage === "links") console.log(`Нашел ссылок на товары: ${message.found}`);
-      if (message.stage === "product") console.log(`Собираю товар ${message.current}/${message.total}`);
+      if (message.stage === "product_start") console.log(`Старт товара ${message.current}/${message.total}`);
+      if (message.stage === "product_done") console.log(`Готово товаров ${message.current}/${message.total}`);
       if (message.stage === "skip") console.log(`Пропущен товар ${message.current}/${message.total}: ${message.reason}`);
       if (message.stage === "error") console.log(`Ошибка товара ${message.current}/${message.total}: ${message.error}`);
     },

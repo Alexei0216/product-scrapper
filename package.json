@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node bot.js",
     "scrape": "node scraper.js",
-    "test": "node --check scraper.js && node --check bot.js && node --check add-csv.js && node --check config.js && node --check settings-store.js"
+    "test": "node --check scraper.js && node --check bot.js && node --check add-csv.js && node --check config.js && node --check settings-store.js && node test.js"
   },
   "keywords": [],
   "author": "",
