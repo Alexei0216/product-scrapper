@@ -38,6 +38,25 @@ ALLOWED_CHAT_IDS=123456789
 npm start
 ```
 
+## Render Web Service
+
+Use a Web Service with:
+
+```text
+Build Command: npm install
+Start Command: npm start
+```
+
+The bot opens a small health-check server on Render's `PORT`, so Render can keep the web service alive. The root path `/` and `/healthz` return JSON status for the Telegram polling loop.
+
+Optional environment variables:
+
+- `BOT_HEALTH_PORT` - local fallback port when `PORT` is not set.
+- `BOT_KEEP_ALIVE_URL` - public Render URL to ping periodically while the process is running.
+- `BOT_KEEP_ALIVE_INTERVAL_MS` - keep-alive interval, default `600000`.
+
+Free Render web services can still sleep during inactivity. For the best free uptime, add an external monitor such as UptimeRobot or cron-job.org that requests `https://your-service.onrender.com/healthz` every few minutes.
+
 Send the bot a URL like:
 
 ```text

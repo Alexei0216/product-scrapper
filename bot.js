@@ -1,4 +1,6 @@
 const fs = require("fs");
+const http = require("http");
+const https = require("https");
 const path = require("path");
 const config = require("./config");
 const scrape = require("./scraper");
@@ -7,6 +9,12 @@ const settingsStore = require("./settings-store");
 const API_BASE = `https://api.telegram.org/bot${config.telegram.token}`;
 const runningChats = new Set();
 const sessions = new Map();
+const startedAt = new Date();
+const runtimeStatus = {
+  telegramReady: false,
+  lastUpdateAt: null,
+  lastPollError: null,
+};
 const MAX_ARCHIVE_URLS = 10;
 const RETRYABLE_ERROR_CODES = new Set([
   "ECONNRESET",
@@ -937,6 +945,8 @@ async function handleCallbackQuery(callbackQuery) {
 
 async function poll() {
   await validateTelegramToken();
+  runtimeStatus.telegramReady = true;
+  runtimeStatus.lastPollError = null;
 
   let offset = 0;
   if (config.telegram.allowedChatIds[0]) {
@@ -952,6 +962,7 @@ async function poll() {
       });
 
       for (const update of updates) {
+        runtimeStatus.lastUpdateAt = new Date();
         offset = update.update_id + 1;
         if (update.message) {
           handleMessage(update.message).catch((error) => {
@@ -965,11 +976,89 @@ async function poll() {
         }
       }
     } catch (error) {
+      runtimeStatus.lastPollError = error.message || String(error);
       console.error("Polling error:", error.message);
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
   }
 }
+
+function startHealthServer() {
+  const port = Number(process.env.PORT || process.env.BOT_HEALTH_PORT || 3000);
+  const keepAliveUrl = process.env.BOT_KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || "";
+  const keepAliveIntervalMs = Number(process.env.BOT_KEEP_ALIVE_INTERVAL_MS || 10 * 60 * 1000);
+
+  const server = http.createServer((req, res) => {
+    const body = {
+      ok: runtimeStatus.telegramReady,
+      service: "product-scrapper-bot",
+      uptimeSeconds: Math.round(process.uptime()),
+      startedAt: startedAt.toISOString(),
+      lastUpdateAt: runtimeStatus.lastUpdateAt
+        ? runtimeStatus.lastUpdateAt.toISOString()
+        : null,
+      lastPollError: runtimeStatus.lastPollError,
+      runningJobs: runningChats.size,
+    };
+
+    if (req.url === "/" || req.url === "/healthz") {
+      res.writeHead(runtimeStatus.telegramReady ? 200 : 503, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(`${JSON.stringify(body)}\n`);
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(`${JSON.stringify({ ok: false, error: "Not found" })}\n`);
+  });
+
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`Health server listening on port ${port}`);
+  });
+
+  if (keepAliveUrl && Number.isFinite(keepAliveIntervalMs) && keepAliveIntervalMs > 0) {
+    setInterval(() => {
+      pingUrl(keepAliveUrl);
+    }, keepAliveIntervalMs).unref();
+  }
+
+  const shutdown = () => {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+}
+
+function pingUrl(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    console.error("Keep-alive ping error: invalid BOT_KEEP_ALIVE_URL");
+    return;
+  }
+
+  const client = url.protocol === "https:" ? https : http;
+  const req = client.request(
+    url,
+    { method: "GET", timeout: 15000 },
+    (res) => {
+      res.resume();
+    }
+  );
+
+  req.on("timeout", () => req.destroy(new Error("timeout")));
+  req.on("error", (error) => {
+    console.error("Keep-alive ping error:", error.message || error);
+  });
+  req.end();
+}
+
+startHealthServer();
 
 poll().catch((error) => {
   console.error(error);
