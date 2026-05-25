@@ -47,6 +47,12 @@ Build Command: npm install
 Start Command: npm start
 ```
 
+The `postinstall` script downloads the Chromium browser used by Playwright. If Render is configured to ignore npm lifecycle scripts, use this build command instead:
+
+```text
+Build Command: npm install && npx playwright install chromium
+```
+
 The bot opens a small health-check server on Render's `PORT`, so Render can keep the web service alive. The root path `/` and `/healthz` return JSON status for the Telegram polling loop.
 
 Optional environment variables:
