@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "scraper.js",
   "scripts": {
-    "postinstall": "npx playwright install chromium",
+    "postinstall": "node scripts/install-playwright.js",
     "start": "node bot.js",
     "scrape": "node scraper.js",
     "test": "node --check scraper.js && node --check bot.js && node --check add-csv.js && node --check config.js && node --check settings-store.js && node test.js"
