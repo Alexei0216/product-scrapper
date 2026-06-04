@@ -399,6 +399,79 @@ async function collectProductLinks(page, archiveUrl, options) {
 
         return false;
       };
+      const productCardSelector = [
+        "[data-product_id]",
+        "[data-product-id]",
+        "[itemtype*='Product' i]",
+        ".product",
+        "li.product",
+        "[class*='product-card' i]",
+        "[class*='product-item' i]",
+        "[class*='product-tile' i]",
+        "[class*='catalog-item' i]",
+        "[class*='product__' i]",
+      ].join(", ");
+      const productHrefSelector = [
+        "[data-product_id] a[href]",
+        "[data-product-id][href]",
+        "[data-product-id] a[href]",
+        "[itemtype*='Product' i] a[href]",
+        ".product a[href]",
+        "li.product a[href]",
+        "[class*='product-card' i] a[href]",
+        "[class*='product-item' i] a[href]",
+        "[class*='product-tile' i] a[href]",
+        "[class*='catalog-item' i] a[href]",
+      ].join(", ");
+      const productHrefCount = (element) => {
+        const urls = new Set();
+        for (const anchor of element.querySelectorAll(productHrefSelector)) {
+          if (inExcludedBlock(anchor)) continue;
+          urls.add(anchor.href || anchor.getAttribute("href"));
+        }
+        return urls.size;
+      };
+      const scopeScore = (element) => {
+        const count = productHrefCount(element);
+        if (count < 2) return -10000;
+
+        const rect = element.getBoundingClientRect();
+        const attrs = `${element.className || ""} ${element.id || ""} ${element.getAttribute("aria-label") || ""}`;
+        let score = 0;
+
+        score += Math.min(count, 12) * 12;
+        if (element.closest("main")) score += 80;
+        if (/products|product-list|catalog|category|collection|listing|grid|archive|shop|woocommerce/i.test(attrs)) score += 90;
+        if (/related|recommend|similar|upsell|cross-sell|viewed|recently/i.test(attrs)) score -= 300;
+        score -= Math.max(0, rect.top + window.scrollY) / 8;
+        score -= Math.max(0, element.querySelectorAll(productCardSelector).length - count) * 2;
+
+        return score;
+      };
+      const findPrimaryScope = () => {
+        const explicit = one(rule.listingSelector);
+        if (explicit) return explicit;
+
+        const cards = Array.from(document.querySelectorAll(productCardSelector)).filter((card) => !inExcludedBlock(card));
+        const candidates = new Set();
+
+        for (const card of cards) {
+          let node = card;
+          for (let depth = 0; depth < 7 && node && node !== document.body; depth += 1) {
+            if (productHrefCount(node) >= 2) candidates.add(node);
+            node = node.parentElement;
+          }
+        }
+
+        const scored = [...candidates]
+          .map((element) => ({ element, score: scopeScore(element), count: productHrefCount(element) }))
+          .filter((item) => item.score > -10000)
+          .sort((a, b) => b.score - a.score);
+
+        return scored[0]?.element || document.querySelector("main") || document.body;
+      };
+      const primaryScope = findPrimaryScope();
+      const inPrimaryScope = (element) => !primaryScope || primaryScope === document.body || primaryScope.contains(element);
       const samePage = (href) => {
         try {
           const url = new URL(href, location.href);
@@ -453,6 +526,7 @@ async function collectProductLinks(page, archiveUrl, options) {
           const href = anchor.href || anchor.getAttribute("href");
           if (!href || samePage(href)) continue;
           if (inExcludedBlock(anchor)) continue;
+          if (!inPrimaryScope(anchor)) continue;
           const cls = `${anchor.className || ""}`.toLowerCase();
           if (/compare|basket|cart|wishlist|settings/.test(cls + " " + href)) continue;
           strongProductLinks.push(new URL(href, location.href).href);
@@ -463,6 +537,7 @@ async function collectProductLinks(page, archiveUrl, options) {
         const href = new URL(anchor.getAttribute("href"), location.href).href;
         if (samePage(href)) return { href, score: -100 };
         if (inExcludedBlock(anchor)) return { href, score: -100 };
+        if (!inPrimaryScope(anchor)) return { href, score: -100 };
         const label = text(anchor.innerText || anchor.getAttribute("aria-label") || anchor.getAttribute("title"));
         const cls = `${anchor.className || ""} ${anchor.id || ""}`.toLowerCase();
         const parent = anchor.closest('[data-product_id], [data-product-id], [itemtype*="Product" i], .product, [class*="product-card" i], [class*="product-item" i], [class*="product-tile" i], [class*="catalog-item" i], [class*="product__" i]');
@@ -488,7 +563,18 @@ async function collectProductLinks(page, archiveUrl, options) {
         )?.href ||
         "";
 
-      return { anchors, strongProductLinks, urlsFromJsonLd, next };
+      return {
+        anchors,
+        strongProductLinks,
+        urlsFromJsonLd: primaryScope === document.body ? urlsFromJsonLd : [],
+        next,
+        primaryScope: {
+          tag: primaryScope.tagName,
+          id: primaryScope.id || "",
+          className: `${primaryScope.className || ""}`.slice(0, 160),
+          productLinks: productHrefCount(primaryScope),
+        },
+      };
     }, rule);
 
     for (const href of extracted.strongProductLinks) {

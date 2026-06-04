@@ -3,6 +3,7 @@ module.exports = {
   // Example:
   // "example-shop.com": {
   //   productLinkSelector: ".product-card a[href]",
+  //   listingSelector: ".catalog-products",
   //   nextSelector: "a[rel='next']",
 //   loadMoreSelector: "button.load-more",
   //   excludeSelector: ".related-products, .upsells, .cross-sells",
