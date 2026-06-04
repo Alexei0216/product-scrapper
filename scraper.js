@@ -294,6 +294,59 @@ async function collectProductLinks(page, archiveUrl, options) {
       window.scrollTo(0, 0);
     }).catch(() => {});
 
+    const pageKind = await page.evaluate(() => {
+      const text = (value) => (value || "").replace(/\s+/g, " ").trim();
+      const current = new URL(location.href);
+      current.hash = "";
+      let sameUrlJsonProduct = false;
+      let jsonProductCount = 0;
+
+      for (const script of document.querySelectorAll('script[type*="ld+json"]')) {
+        try {
+          const parsed = JSON.parse(script.textContent || "{}");
+          const stack = Array.isArray(parsed) ? [...parsed] : [parsed];
+
+          while (stack.length) {
+            const item = stack.shift();
+            if (!item || typeof item !== "object") continue;
+
+            const type = Array.isArray(item["@type"]) ? item["@type"].join(" ") : item["@type"];
+            if (/Product/i.test(type || "")) {
+              jsonProductCount += 1;
+              const itemUrl = item.url || item["@id"];
+              if (itemUrl) {
+                const parsedUrl = new URL(itemUrl, location.href);
+                parsedUrl.hash = "";
+                if (parsedUrl.href === current.href) sameUrlJsonProduct = true;
+              }
+            }
+            if (Array.isArray(item["@graph"])) stack.push(...item["@graph"]);
+            if (item.mainEntity) stack.push(item.mainEntity);
+          }
+        } catch {}
+      }
+
+      const hasDetailPrice = Boolean(document.querySelector('[itemprop="price"], meta[property="product:price:amount"], .summary [class*="price" i], .product [class*="price" i]'));
+      const hasDetailAction = /add.to.cart|buy.now|comprar|a\u00f1adir|comprar ahora|\u0432 \u043a\u043e\u0440\u0437\u0438\u043d|\u043a\u0443\u043f\u0438\u0442\u044c/i.test(
+        text(Array.from(document.querySelectorAll("button, a, input[type='submit']")).slice(0, 80).map((node) => node.value || node.textContent).join(" "))
+      );
+      const hasSku = Boolean(document.querySelector('[itemprop="sku"], [class*="sku" i], [id*="sku" i]')) ||
+        /(?:SKU|Referencia|Ref\.?|MPN|\u0410\u0440\u0442\u0438\u043a\u0443\u043b)\s*[:#-]?\s*[A-Z0-9._-]{3,}/i.test(text(document.body.innerText));
+      const productCardCount = document.querySelectorAll(
+        "[data-product_id], [data-product-id], [class*='product-card' i], [class*='product-item' i], [class*='product-tile' i], li.product"
+      ).length;
+      const productLikeBody = productCardCount <= 2 && Boolean(document.querySelector("h1")) && hasDetailPrice && (hasDetailAction || hasSku);
+
+      return {
+        isProductPage: sameUrlJsonProduct || (jsonProductCount === 1 && productLikeBody) || productLikeBody,
+      };
+    }).catch(() => ({ isProductPage: false }));
+
+    if (pageKind.isProductPage) {
+      productLinks.set(currentUrl, 100);
+      break;
+    }
+
     const extracted = await page.evaluate((rule) => {
       const text = (value) => (value || "").replace(/\s+/g, " ").trim();
       const all = (selector) => {
@@ -305,7 +358,25 @@ async function collectProductLinks(page, archiveUrl, options) {
       };
       const one = (selector) => all(selector)[0] || null;
       const relatedPattern =
-        /related|similar|recommend|recommended|suggest|suggested|you-may|also-like|upsell|up-sell|cross-sell|viewed|recently|relacionad|recomendad|tambien|también|похож|рекоменд|также|смотрите|сопутств/i;
+        /related|similar|recommend|recommended|suggest|suggested|you-may|also-like|you may also|may like|also bought|customers also|more from|other products|upsell|up-sell|cross-sell|viewed|recently|relacionad|recomendad|tambien|tambi\u00e9n|te puede|puede interesar|otros productos|productos relacionados|\u043f\u043e\u0445\u043e\u0436|\u0440\u0435\u043a\u043e\u043c\u0435\u043d\u0434|\u0442\u0430\u043a\u0436\u0435|\u043c\u043e\u0436\u0435\u0442 \u043f\u043e\u043d\u0440\u0430\u0432|\u0432\u0430\u043c \u0442\u0430\u043a\u0436\u0435|\u0441\u043c\u043e\u0442\u0440\u0438\u0442\u0435|\u0441\u043e\u043f\u0443\u0442\u0441\u0442\u0432/i;
+      const nearbyText = (element) => {
+        const parts = [];
+        let node = element;
+
+        for (let index = 0; index < 4 && node; index += 1) {
+          let sibling = node.previousElementSibling;
+          for (let siblingIndex = 0; siblingIndex < 3 && sibling; siblingIndex += 1) {
+            if (/^(H[1-6]|HEADER|NAV)$/i.test(sibling.tagName || "")) parts.push(text(sibling.textContent));
+            if (sibling.getAttribute?.("role") === "tab" || sibling.getAttribute?.("role") === "heading") {
+              parts.push(text(sibling.textContent));
+            }
+            sibling = sibling.previousElementSibling;
+          }
+          node = node.parentElement;
+        }
+
+        return parts.join(" ");
+      };
       const inExcludedBlock = (element) => {
         try {
           if (rule.excludeSelector && element.closest(rule.excludeSelector)) return true;
@@ -316,8 +387,12 @@ async function collectProductLinks(page, archiveUrl, options) {
           const attrs = `${container.className || ""} ${container.id || ""} ${container.getAttribute("aria-label") || ""}`;
           if (relatedPattern.test(attrs)) return true;
 
+          const labelledBy = container.getAttribute("aria-labelledby");
+          if (labelledBy && relatedPattern.test(text(document.getElementById(labelledBy)?.textContent))) return true;
+
           const heading = container.querySelector("h1,h2,h3,h4,h5,h6,[role='heading']");
           if (relatedPattern.test(text(heading?.textContent))) return true;
+          if (relatedPattern.test(nearbyText(container))) return true;
 
           container = container.parentElement?.closest?.("section, aside, article, div, ul, ol") || null;
         }
