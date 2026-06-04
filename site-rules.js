@@ -4,8 +4,9 @@ module.exports = {
   // "example-shop.com": {
   //   productLinkSelector: ".product-card a[href]",
   //   nextSelector: "a[rel='next']",
-  //   loadMoreSelector: "button.load-more",
-  //   nameSelector: "h1.product-title",
+//   loadMoreSelector: "button.load-more",
+  //   excludeSelector: ".related-products, .upsells, .cross-sells",
+//   nameSelector: "h1.product-title",
   //   priceSelector: ".price-current",
   //   skuSelector: ".sku",
   //   descriptionSelector: "#description",

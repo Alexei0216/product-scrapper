@@ -304,6 +304,26 @@ async function collectProductLinks(page, archiveUrl, options) {
         }
       };
       const one = (selector) => all(selector)[0] || null;
+      const relatedPattern =
+        /related|similar|recommend|recommended|suggest|suggested|you-may|also-like|upsell|up-sell|cross-sell|viewed|recently|relacionad|recomendad|tambien|también|похож|рекоменд|также|смотрите|сопутств/i;
+      const inExcludedBlock = (element) => {
+        try {
+          if (rule.excludeSelector && element.closest(rule.excludeSelector)) return true;
+        } catch {}
+
+        let container = element.closest("section, aside, article, div, ul, ol");
+        while (container && container !== document.body) {
+          const attrs = `${container.className || ""} ${container.id || ""} ${container.getAttribute("aria-label") || ""}`;
+          if (relatedPattern.test(attrs)) return true;
+
+          const heading = container.querySelector("h1,h2,h3,h4,h5,h6,[role='heading']");
+          if (relatedPattern.test(text(heading?.textContent))) return true;
+
+          container = container.parentElement?.closest?.("section, aside, article, div, ul, ol") || null;
+        }
+
+        return false;
+      };
       const samePage = (href) => {
         try {
           const url = new URL(href, location.href);
@@ -357,6 +377,7 @@ async function collectProductLinks(page, archiveUrl, options) {
         for (const anchor of all(selector)) {
           const href = anchor.href || anchor.getAttribute("href");
           if (!href || samePage(href)) continue;
+          if (inExcludedBlock(anchor)) continue;
           const cls = `${anchor.className || ""}`.toLowerCase();
           if (/compare|basket|cart|wishlist|settings/.test(cls + " " + href)) continue;
           strongProductLinks.push(new URL(href, location.href).href);
@@ -366,6 +387,7 @@ async function collectProductLinks(page, archiveUrl, options) {
       const anchors = Array.from(document.querySelectorAll("a[href]")).map((anchor) => {
         const href = new URL(anchor.getAttribute("href"), location.href).href;
         if (samePage(href)) return { href, score: -100 };
+        if (inExcludedBlock(anchor)) return { href, score: -100 };
         const label = text(anchor.innerText || anchor.getAttribute("aria-label") || anchor.getAttribute("title"));
         const cls = `${anchor.className || ""} ${anchor.id || ""}`.toLowerCase();
         const parent = anchor.closest('[data-product_id], [data-product-id], [itemtype*="Product" i], .product, [class*="product-card" i], [class*="product-item" i], [class*="product-tile" i], [class*="catalog-item" i], [class*="product__" i]');
