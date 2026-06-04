@@ -120,6 +120,7 @@ All production settings are in `.env`:
 - `SCRAPER_MAX_ARCHIVE_PAGES` - how many archive/pagination pages to scan.
 - `SCRAPER_REQUEST_DELAY_MS` - small delay after page load; lower is faster, higher is gentler for slow sites.
 - `SCRAPER_PRODUCT_CONCURRENCY` - how many product pages are parsed in parallel.
+- `SCRAPER_DEBUG` - when `true`, skipped/error pages save HTML, screenshots, and JSON diagnostics in `runs/.../debug`.
 - `WC_DEFAULT_CATEGORY` - fallback WooCommerce category.
 - `WC_DEFAULT_PRODUCT_BRAND` - value for `taxonomy=product_brand`.
 - `WC_DEFAULT_CAR_BRAND` - value for `taxonomy=car_brand`.
@@ -162,11 +163,38 @@ The names should match existing WooCommerce categories/taxonomy terms if you wan
 
 ## Extraction Strategy
 
-The scraper is selector-free by default. It uses:
+The scraper is selector-free by default, but it uses several fallback layers:
 
 - JSON-LD/schema.org Product data when available.
 - OpenGraph and product meta tags.
 - WooCommerce/common product DOM patterns.
 - URL and card heuristics to discover product links from archive pages.
+- Lazy archive support through auto-scroll and optional "load more" buttons.
+- Product-like JSON/API responses observed by Playwright while the page loads.
+- Scored price candidates, so current/schema prices beat old prices, delivery text, discounts, and installment text.
+- Confidence scoring for extracted products; low-confidence products are skipped instead of silently entering the CSV.
+- Optional debug artifacts for skipped/error pages.
 
 Some heavily protected sites may still block browsers or hide prices behind API calls. For those, add site-specific rules later, but the default flow is ready for normal e-commerce archives.
+
+## Site-Specific Rules
+
+For difficult sites, add selectors in `site-rules.js`:
+
+```js
+module.exports = {
+  "example-shop.com": {
+    productLinkSelector: ".product-card a[href]",
+    nextSelector: "a[rel='next']",
+    loadMoreSelector: "button.load-more",
+    nameSelector: "h1.product-title",
+    priceSelector: ".price-current",
+    skuSelector: ".sku",
+    descriptionSelector: "#description",
+    shortDescriptionSelector: ".short-description",
+    imageSelector: ".product-gallery img, .product-gallery a[href]",
+  },
+};
+```
+
+The scraper tries these selectors first for that domain and then falls back to the universal extraction logic.

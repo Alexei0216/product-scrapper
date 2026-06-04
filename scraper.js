@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const config = require("./config");
+const siteRules = require("./site-rules");
 const toCSV = require("./add-csv");
 
 function cleanText(text) {
@@ -63,6 +64,109 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+function hostFor(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function ruleFor(url) {
+  const host = hostFor(url);
+  return Object.entries(siteRules).find(([domain]) => host === domain || host.endsWith(`.${domain}`))?.[1] || {};
+}
+
+function safeFileName(value) {
+  return String(value || "page")
+    .replace(/^https?:\/\//i, "")
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 140) || "page";
+}
+
+function productConfidence(product) {
+  let score = 0;
+  if (product.name && product.name.length >= 3 && product.name.length <= 180) score += 30;
+  if (product.price && /\d/.test(product.price)) score += 35;
+  if (product.sku && !/^AUTO-/.test(product.sku)) score += 8;
+  if (product.description && product.description.length >= 20) score += 10;
+  if (product.images?.length) score += 12;
+  if (product.categories) score += 5;
+  return Math.min(100, score);
+}
+
+function shouldKeepProduct(product) {
+  return product.name && product.price && product.confidence >= 50;
+}
+
+function createDiagnostics(options) {
+  if (!options.debug) return null;
+  const dir = path.join(options.outputDir, "debug");
+  fs.mkdirSync(dir, { recursive: true });
+  return {
+    dir,
+    async savePage(page, url, type, detail = {}) {
+      const base = `${String(Date.now()).slice(-8)}-${type}-${safeFileName(url)}`;
+      const jsonFile = path.join(dir, `${base}.json`);
+      const htmlFile = path.join(dir, `${base}.html`);
+      const pngFile = path.join(dir, `${base}.png`);
+
+      fs.writeFileSync(jsonFile, JSON.stringify({ url, type, ...detail }, null, 2), "utf8");
+      await page.content().then((html) => fs.writeFileSync(htmlFile, html, "utf8")).catch(() => {});
+      await page.screenshot({ path: pngFile, fullPage: true }).catch(() => {});
+    },
+  };
+}
+
+function parsePriceValue(value) {
+  const text = cleanText(value);
+  if (!text || !/\d/.test(text)) return null;
+
+  const match = text.match(/[-+]?\d[\d\s.,']*(?:[.,]\d{1,2})?/);
+  if (!match) return null;
+
+  let raw = match[0].replace(/\s|'/g, "");
+  const lastComma = raw.lastIndexOf(",");
+  const lastDot = raw.lastIndexOf(".");
+  const separatorIndex = Math.max(lastComma, lastDot);
+  const digitsAfterSeparator = separatorIndex >= 0 ? raw.slice(separatorIndex + 1).replace(/\D/g, "").length : 0;
+  const decimalSeparator = digitsAfterSeparator > 0 && digitsAfterSeparator <= 2 ? raw[separatorIndex] : "";
+
+  if (decimalSeparator) {
+    raw = raw.replace(new RegExp(`[^\\d${decimalSeparator === "." ? "\\." : ","}-]`, "g"), "");
+    raw = raw.replace(decimalSeparator, ".");
+  } else {
+    raw = raw.replace(/[^\d-]/g, "");
+  }
+
+  const number = Number(raw);
+  return Number.isFinite(number) ? number : null;
+}
+
+function bestPrice(candidates) {
+  let best = null;
+
+  for (const candidate of candidates || []) {
+    const text = cleanText(candidate?.text ?? candidate);
+    const value = parsePriceValue(text);
+    if (value === null) continue;
+
+    const source = String(candidate?.source || "").toLowerCase();
+    const context = `${source} ${text}`.toLowerCase();
+    let score = Number(candidate?.score || 0);
+
+    if (/json-ld|schema|itemprop|product:price|og:price|current|regular|sale|price/.test(context)) score += 20;
+    if (/old|was|before|strike|compare|save|discount|shipping|delivery|month|installment|finance|tax|vat|iva/.test(context)) score -= 18;
+    if (value <= 0) score -= 8;
+    if (value > 1000000) score -= 12;
+
+    if (!best || score > best.score) best = { text, value, score };
+  }
+
+  return best ? String(best.value) : "";
+}
+
 function normalizeImageUrl(url, baseUrl) {
   const cleaned = String(url || "")
     .replace(/\/cache\/[^/]+/g, "")
@@ -115,13 +219,20 @@ async function delay(ms) {
 }
 
 async function setupFastContext(browser) {
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    locale: "en-US",
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    extraHTTPHeaders: {
+      "Accept-Language": "en-US,en;q=0.9,ru;q=0.7,es;q=0.7",
+    },
+  });
   await context.route("**/*", (route) => {
     const request = route.request();
     const resourceType = request.resourceType();
     const url = request.url();
 
-    if (["image", "media", "font", "stylesheet"].includes(resourceType)) {
+    if (["media", "font", "stylesheet"].includes(resourceType)) {
       route.abort().catch(() => {});
       return;
     }
@@ -155,9 +266,44 @@ async function collectProductLinks(page, archiveUrl, options) {
     });
     await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
     await delay(options.requestDelayMs);
+    const rule = ruleFor(currentUrl);
 
-    const extracted = await page.evaluate(() => {
+    for (let clickIndex = 0; clickIndex < 5 && rule.loadMoreSelector; clickIndex += 1) {
+      const clicked = await page
+        .locator(rule.loadMoreSelector)
+        .first()
+        .click({ timeout: 2500 })
+        .then(() => true)
+        .catch(() => false);
+      if (!clicked) break;
+      await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+      await delay(options.requestDelayMs);
+    }
+
+    await page.evaluate(async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      let lastHeight = 0;
+
+      for (let index = 0; index < 6; index += 1) {
+        window.scrollTo(0, document.body.scrollHeight);
+        await sleep(250);
+        const height = document.body.scrollHeight;
+        if (height === lastHeight) break;
+        lastHeight = height;
+      }
+      window.scrollTo(0, 0);
+    }).catch(() => {});
+
+    const extracted = await page.evaluate((rule) => {
       const text = (value) => (value || "").replace(/\s+/g, " ").trim();
+      const all = (selector) => {
+        try {
+          return selector ? Array.from(document.querySelectorAll(selector)) : [];
+        } catch {
+          return [];
+        }
+      };
+      const one = (selector) => all(selector)[0] || null;
       const samePage = (href) => {
         try {
           const url = new URL(href, location.href);
@@ -194,16 +340,21 @@ async function collectProductLinks(page, archiveUrl, options) {
 
       const strongProductLinks = [];
       const strongSelectors = [
+        rule.productLinkSelector,
         "[data-product_id] a[href]",
         "[data-product-id][href]",
         "[data-product-id] a[href]",
         "a.product__name[href]",
         ".product a[href]",
         "[itemtype*='Product' i] a[href]",
-      ];
+        "[class*='product-card' i] a[href]",
+        "[class*='product-item' i] a[href]",
+        "[class*='product-tile' i] a[href]",
+        "[class*='catalog-item' i] a[href]",
+      ].filter(Boolean);
 
       for (const selector of strongSelectors) {
-        for (const anchor of document.querySelectorAll(selector)) {
+        for (const anchor of all(selector)) {
           const href = anchor.href || anchor.getAttribute("href");
           if (!href || samePage(href)) continue;
           const cls = `${anchor.className || ""}`.toLowerCase();
@@ -217,21 +368,23 @@ async function collectProductLinks(page, archiveUrl, options) {
         if (samePage(href)) return { href, score: -100 };
         const label = text(anchor.innerText || anchor.getAttribute("aria-label") || anchor.getAttribute("title"));
         const cls = `${anchor.className || ""} ${anchor.id || ""}`.toLowerCase();
-        const parent = anchor.closest('[data-product_id], [data-product-id], [itemtype*="Product" i], .product, [class*="product-card" i], [class*="product__" i]');
+        const parent = anchor.closest('[data-product_id], [data-product-id], [itemtype*="Product" i], .product, [class*="product-card" i], [class*="product-item" i], [class*="product-tile" i], [class*="catalog-item" i], [class*="product__" i]');
         const image = anchor.querySelector("img");
         let score = 0;
 
         if (parent) score += 5;
         if (image) score += 2;
-        if (/product|prod|card|title|name|woocommerce-loop-product/.test(cls)) score += 4;
+        if (/product|prod|card|tile|item|catalog|title|name|woocommerce-loop-product/.test(cls)) score += 4;
         if (/compare|basket|cart|wishlist|settings/.test(cls + " " + href)) score -= 10;
         if (label.length >= 8 && label.length <= 140) score += 1;
         if (anchor.querySelector('[itemprop="name"], [itemprop="image"]')) score += 3;
+        if (parent?.querySelector('[class*="price" i], [itemprop="price"]')) score += 4;
 
         return { href, score };
       });
 
       const next =
+        (rule.nextSelector ? one(rule.nextSelector)?.href : "") ||
         document.querySelector('a[rel="next"]')?.href ||
         Array.from(document.querySelectorAll("a[href]")).find((anchor) =>
           /^(next|older|siguiente|suivant|weiter|далее|следующая|>|\u203a)$/i.test(text(anchor.innerText))
@@ -239,7 +392,7 @@ async function collectProductLinks(page, archiveUrl, options) {
         "";
 
       return { anchors, strongProductLinks, urlsFromJsonLd, next };
-    });
+    }, rule);
 
     for (const href of extracted.strongProductLinks) {
       const url = normalizeUrl(href, currentUrl);
@@ -270,15 +423,64 @@ async function collectProductLinks(page, archiveUrl, options) {
 }
 
 async function extractProduct(page, url, options) {
+  const apiProducts = [];
+  const collectApiProduct = async (response) => {
+    try {
+      const headers = response.headers();
+      const responseUrl = response.url();
+      if (!/json/i.test(headers["content-type"] || "") && !/product|catalog|graphql|api/i.test(responseUrl)) return;
+
+      const payload = await response.json();
+      const stack = Array.isArray(payload) ? [...payload] : [payload];
+      let scanned = 0;
+
+      while (stack.length && scanned < 800) {
+        scanned += 1;
+        const item = stack.shift();
+        if (!item || typeof item !== "object") continue;
+
+        const hasProductShape =
+          item.name || item.title || item.sku || item.mpn || item.price || item.amount || item.images || item.image;
+        if (hasProductShape && (item.price || item.offers || item.variants || item.images || item.image)) {
+          apiProducts.push(item);
+          if (apiProducts.length >= 20) break;
+        }
+
+        for (const value of Object.values(item)) {
+          if (value && typeof value === "object") {
+            if (Array.isArray(value)) stack.push(...value.slice(0, 50));
+            else stack.push(value);
+          }
+        }
+      }
+    } catch {}
+  };
+
+  page.on("response", collectApiProduct);
+
   await page.goto(url, {
     waitUntil: "domcontentloaded",
     timeout: options.navigationTimeoutMs,
   });
   await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
   await delay(options.requestDelayMs);
+  await page.evaluate(() => {
+    window.scrollTo(0, Math.min(document.body.scrollHeight, 1600));
+  }).catch(() => {});
+  await delay(Math.min(500, options.requestDelayMs + 200));
 
-  const raw = await page.evaluate(() => {
+  const rule = ruleFor(url);
+
+  const raw = await page.evaluate((rule) => {
     const text = (value) => (value || "").replace(/\s+/g, " ").trim();
+    const all = (selector) => {
+      try {
+        return selector ? Array.from(document.querySelectorAll(selector)) : [];
+      } catch {
+        return [];
+      }
+    };
+    const one = (selector) => all(selector)[0] || null;
     const html = (element) => {
       if (!element) return "";
       const clone = element.cloneNode(true);
@@ -286,6 +488,8 @@ async function extractProduct(page, url, options) {
       return clone.innerHTML || "";
     };
     const meta = (selector) => document.querySelector(selector)?.getAttribute("content") || "";
+    const firstText = (selector) => text(one(selector)?.textContent);
+    const firstHtml = (selector) => html(one(selector));
     const jsonProducts = [];
     const imageUrlsFromValue = (value) => {
       if (!value) return [];
@@ -320,16 +524,23 @@ async function extractProduct(page, url, options) {
     const product = jsonProducts[0] || {};
     const offers = Array.isArray(product.offers) ? product.offers[0] : product.offers || {};
     const priceCandidates = [
-      offers.price,
-      offers.lowPrice,
-      offers.highPrice,
-      meta('meta[property="product:price:amount"]'),
+      { text: offers.price, source: "json-ld offers.price", score: 80 },
+      { text: offers.lowPrice, source: "json-ld offers.lowPrice", score: 65 },
+      { text: offers.highPrice, source: "json-ld offers.highPrice", score: 50 },
+      { text: meta('meta[property="product:price:amount"]'), source: "product meta", score: 75 },
+      { text: meta('meta[property="og:price:amount"]'), source: "og price", score: 65 },
+      { text: firstText(rule.priceSelector), source: "site rule", score: 90 },
       ...Array.from(document.querySelectorAll('[itemprop="price"], [class*="price" i], [id*="price" i]'))
         .slice(0, 8)
-        .map((node) => node.getAttribute("content") || node.textContent),
+        .map((node) => ({
+          text: node.getAttribute("content") || node.textContent,
+          source: `${node.tagName}.${node.className || ""}#${node.id || ""}`,
+          score: node.matches('[itemprop="price"]') ? 65 : 35,
+        })),
     ];
 
     const descriptionElement =
+      one(rule.descriptionSelector) ||
       document.querySelector('[itemprop="description"]') ||
       document.querySelector('[class*="description" i]') ||
       document.querySelector('[id*="description" i]') ||
@@ -337,6 +548,7 @@ async function extractProduct(page, url, options) {
       document.querySelector(".product-description");
 
     const skuText =
+      firstText(rule.skuSelector) ||
       product.sku ||
       product.mpn ||
       document.querySelector('[itemprop="sku"]')?.textContent ||
@@ -346,6 +558,16 @@ async function extractProduct(page, url, options) {
     const imageValues = [
       ...imageUrlsFromValue(product.image),
       meta('meta[property="og:image"]'),
+      ...all(rule.imageSelector)
+        .flatMap((node) => [
+          node.getAttribute("href"),
+          node.getAttribute("src"),
+          node.getAttribute("data-src"),
+          node.getAttribute("data-large"),
+          node.getAttribute("data-full"),
+          node.getAttribute("data-original"),
+          node.getAttribute("data-zoom-image"),
+        ]),
       ...Array.from(
         document.querySelectorAll(
           [
@@ -418,36 +640,74 @@ async function extractProduct(page, url, options) {
 
     return {
       name:
+        firstText(rule.nameSelector) ||
         product.name ||
         meta('meta[property="og:title"]') ||
         document.querySelector("h1")?.textContent ||
         document.title,
-      price: priceCandidates.find((value) => /\d/.test(String(value || ""))) || "",
+      priceCandidates,
       sku: skuText,
-      description: product.description || html(descriptionElement) || meta('meta[name="description"]'),
-      shortDescription: meta('meta[name="description"]'),
+      description: product.description || firstHtml(rule.descriptionSelector) || html(descriptionElement) || meta('meta[name="description"]'),
+      shortDescription: firstText(rule.shortDescriptionSelector) || meta('meta[name="description"]'),
       images: imageValues,
       categories: breadcrumbs.join(" > "),
     };
-  });
+  }, rule);
+
+  const apiImageValues = [];
+  const apiPriceCandidates = [];
+  let apiName = "";
+  let apiSku = "";
+  let apiDescription = "";
+
+  for (const item of apiProducts) {
+    apiName ||= cleanText(item.name || item.title);
+    apiSku ||= cleanText(item.sku || item.mpn || item.reference);
+    apiDescription ||= cleanText(item.description || item.shortDescription || item.body_html);
+    apiPriceCandidates.push(
+      { text: item.price, source: "api price", score: 70 },
+      { text: item.price?.amount || item.price?.value, source: "api price object", score: 68 },
+      { text: item.amount, source: "api amount", score: 55 },
+      { text: item.offers?.price, source: "api offers.price", score: 75 },
+      { text: item.offers?.priceSpecification?.price, source: "api priceSpecification.price", score: 70 },
+      { text: item.variants?.[0]?.price, source: "api variant.price", score: 70 },
+      { text: item.variants?.[0]?.price?.amount || item.variants?.[0]?.price?.value, source: "api variant.price object", score: 68 }
+    );
+
+    const images = item.images || item.image || item.media || [];
+    const values = Array.isArray(images) ? images : [images];
+    for (const image of values) {
+      if (typeof image === "string") apiImageValues.push(image);
+      if (image && typeof image === "object") apiImageValues.push(image.url || image.src || image.originalSrc);
+    }
+  }
 
   const images = dedupeImageVariants(unique(
-    raw.images
+    [...raw.images, ...apiImageValues]
       .map((imageUrl) => normalizeImageUrl(imageUrl, url))
       .filter((imageUrl) => /\.(jpe?g|png|webp|gif)(\?|$)/i.test(imageUrl))
       .filter((imageUrl) => !/placeholder|loading|spinner|logo|icon|sprite/i.test(imageUrl))
   )).slice(0, 30);
 
-  return {
+  const product = {
     sourceUrl: url,
-    name: cleanText(raw.name),
-    price: cleanText(raw.price).replace(/[^\d.,-]/g, ""),
-    sku: cleanText(raw.sku) || autoSkuFromUrl(url),
-    description: cleanHtml(raw.description),
+    name: cleanText(raw.name) || apiName,
+    price: bestPrice([...(raw.priceCandidates || []), ...apiPriceCandidates]),
+    sku: cleanText(raw.sku) || apiSku || autoSkuFromUrl(url),
+    description: cleanHtml(raw.description) || apiDescription,
     shortDescription: cleanText(raw.shortDescription),
     categories: cleanText(raw.categories),
     images,
+    extraction: {
+      confidence: 0,
+      apiCandidates: apiProducts.length,
+      hasSiteRule: Object.keys(rule).length > 0,
+    },
   };
+
+  product.confidence = productConfidence(product);
+  product.extraction.confidence = product.confidence;
+  return product;
 }
 
 async function scrape(input = {}) {
@@ -466,6 +726,7 @@ async function scrape(input = {}) {
     requestDelayMs: input.requestDelayMs ?? config.scraper.requestDelayMs,
     productConcurrency: input.productConcurrency || config.scraper.productConcurrency,
     csvDefaults: input.csvDefaults || config.csvDefaults,
+    debug: input.debug ?? config.scraper.debug,
     progress: input.progress,
   };
 
@@ -474,6 +735,7 @@ async function scrape(input = {}) {
   }
 
   fs.mkdirSync(options.outputDir, { recursive: true });
+  const diagnostics = createDiagnostics(options);
   const browser = await chromium.launch({ headless: true });
   const context = await setupFastContext(browser);
   const products = [];
@@ -544,17 +806,23 @@ async function scrape(input = {}) {
 
         try {
           const product = await extractProduct(productPage, url, options);
-          if (product.name && product.price) {
+          if (shouldKeepProduct(product)) {
             results[index] = product;
             saved += 1;
           } else {
             skipped += 1;
+            const reason = [
+              product.name ? "" : "missing name",
+              product.price ? "" : "missing price",
+              product.confidence < 50 ? `low confidence ${product.confidence}` : "",
+            ].filter(Boolean).join(", ") || "no reliable product data";
+            await diagnostics?.savePage(productPage, url, "skip", { reason, product });
             await options.progress?.({
               stage: "skip",
               current: completed + 1,
               total: productUrls.length,
               url,
-              reason: "нет названия или цены",
+              reason,
               saved,
               skipped,
               errors,
@@ -562,6 +830,7 @@ async function scrape(input = {}) {
           }
         } catch (error) {
           errors += 1;
+          await diagnostics?.savePage(productPage, url, "error", { error: error.message });
           await options.progress?.({
             stage: "error",
             current: completed + 1,
@@ -613,6 +882,8 @@ module.exports._internals = {
   autoSkuFromUrl,
   isLikelyProductUrl,
   normalizeUrl,
+  parsePriceValue,
+  bestPrice,
   setupFastContext,
 };
 

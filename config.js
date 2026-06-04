@@ -69,6 +69,7 @@ module.exports = {
     navigationTimeoutMs: numberFromEnv("SCRAPER_NAVIGATION_TIMEOUT_MS", 45000),
     requestDelayMs: numberFromEnv("SCRAPER_REQUEST_DELAY_MS", 200),
     productConcurrency: numberFromEnv("SCRAPER_PRODUCT_CONCURRENCY", 4),
+    debug: ["1", "true", "yes"].includes(String(process.env.SCRAPER_DEBUG || "").toLowerCase()),
   },
 
   csvDefaults: {

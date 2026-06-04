@@ -9,12 +9,20 @@ const settingsStore = require("./settings-store");
 const config = require("./config");
 
 const { addPriceMarkup, normalizePrice } = toCSV._internals;
-const { autoSkuFromUrl, isLikelyProductUrl, normalizeUrl } = scrape._internals;
+const { autoSkuFromUrl, bestPrice, isLikelyProductUrl, normalizeUrl, parsePriceValue } = scrape._internals;
 
 assert.strictEqual(normalizePrice("1.234,56 EUR"), 1234.56);
 assert.strictEqual(normalizePrice("$1,234.56"), 1234.56);
 assert.strictEqual(normalizePrice("1.234"), 1234);
 assert.strictEqual(addPriceMarkup("1,234.56", 10), "1244.56");
+assert.strictEqual(parsePriceValue("1.234,56 EUR"), 1234.56);
+assert.strictEqual(
+  bestPrice([
+    { text: "Save 20", source: "discount", score: 5 },
+    { text: "€149,90", source: "json-ld offers.price", score: 80 },
+  ]),
+  "149.9"
+);
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "product-scrapper-"));
 const csvFile = path.join(tempDir, "products.csv");
