@@ -83,6 +83,87 @@ function productAttributes(product) {
     .filter((option) => option.values.length);
 }
 
+function customOptionAttributes(product) {
+  return (product.customOptions || [])
+    .slice(0, 3)
+    .map((option) => ({
+      name: option.name,
+      values: (option.values || []).map((value) => value.name).filter(Boolean),
+    }))
+    .filter((option) => option.name && option.values.length);
+}
+
+function conditionMatches(condition, selected) {
+  const actual = selected.get(condition.option) || "";
+  const expected = condition.value || "";
+  switch (String(condition.operator || "equal").toLowerCase()) {
+    case "not_equal":
+    case "not-equal":
+    case "neq":
+      return actual !== expected;
+    case "contains":
+      return actual.includes(expected);
+    default:
+      return actual === expected;
+  }
+}
+
+function customOptionIsVisible(option, selected) {
+  const dependency = option.dependency;
+  if (!dependency?.conditions?.length) return true;
+  const matches = dependency.conditions.map((condition) => conditionMatches(condition, selected));
+  return dependency.match === "any" ? matches.some(Boolean) : matches.every(Boolean);
+}
+
+function customOptionVariants(product) {
+  const options = (product.customOptions || []).slice(0, 3).filter((option) => option.name && option.values?.length);
+  if (!options.length) return [];
+
+  const combinations = [];
+  function build(index, selected, values, priceAdditions, image) {
+    if (index === options.length) {
+      combinations.push({ values, priceAdditions, image });
+      return;
+    }
+
+    const option = options[index];
+    if (!customOptionIsVisible(option, selected)) {
+      build(index + 1, selected, [...values, ""], priceAdditions, image);
+      return;
+    }
+
+    for (const value of option.values) {
+      const name = value.name || "";
+      selected.set(option.name, name);
+      build(
+        index + 1,
+        selected,
+        [...values, name],
+        [...priceAdditions, value.price || ""],
+        image || value.image || ""
+      );
+      selected.delete(option.name);
+    }
+  }
+  build(0, new Map(), [], [], "");
+
+  return combinations.map((combination, index) => ({
+    sku: `${product.sku}-V-${String(index + 1).padStart(3, "0")}`,
+    price: combination.priceAdditions.reduce(
+      (total, addition) => total + (normalizePrice(addition) || 0),
+      normalizePrice(product.price) || 0
+    ),
+    options: combination.values,
+    available: true,
+    image: combination.image,
+  }));
+}
+
+function sourceCustomOptions(product) {
+  const options = Array.isArray(product.customOptions) ? product.customOptions : [];
+  return options.length ? JSON.stringify(options) : "";
+}
+
 function toCSV(products, options = {}) {
   const defaults = {
     ...config.csvDefaults,
@@ -110,6 +191,8 @@ function toCSV(products, options = {}) {
     "Attribute 2 value(s)",
     "Attribute 3 name",
     "Attribute 3 value(s)",
+    "Meta: source_custom_options",
+    "Meta: source_url",
     "taxonomy=product_brand",
     "taxonomy=car_brand",
     "taxonomy=car_model",
@@ -118,8 +201,10 @@ function toCSV(products, options = {}) {
   const rows = products.flatMap((product) => {
     const text = productText(product);
     const stock = stockValues(defaults.stockMode);
-    const attributes = productAttributes(product);
-    const variants = Array.isArray(product.variants) ? product.variants : [];
+    const sourceVariants = Array.isArray(product.variants) ? product.variants : [];
+    const generatedVariants = customOptionVariants(product);
+    const variants = sourceVariants.length ? sourceVariants : generatedVariants;
+    const attributes = sourceVariants.length ? productAttributes(product) : customOptionAttributes(product);
 
     if (!variants.length) return [[
       "simple",
@@ -136,6 +221,8 @@ function toCSV(products, options = {}) {
       stock.status,
       "",
       ...attributeColumns([]),
+      sourceCustomOptions(product),
+      product.sourceUrl || "",
       defaults.productBrand,
       defaults.carBrand,
       defaults.carModel,
@@ -156,6 +243,8 @@ function toCSV(products, options = {}) {
       stock.status,
       "",
       ...attributeColumns(attributes),
+      sourceCustomOptions(product),
+      product.sourceUrl || "",
       defaults.productBrand,
       defaults.carBrand,
       defaults.carModel,
@@ -184,6 +273,8 @@ function toCSV(products, options = {}) {
         "",
         "",
         "",
+        "",
+        "",
       ];
     });
     return [parentRow, ...variantRows];
@@ -205,4 +296,7 @@ module.exports._internals = {
   normalizePrice,
   stockValues,
   productAttributes,
+  customOptionAttributes,
+  customOptionVariants,
+  sourceCustomOptions,
 };

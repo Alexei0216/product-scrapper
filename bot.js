@@ -601,7 +601,21 @@ async function runSession(chatId, session) {
       `WooCommerce CSV готов. Товаров: ${result.products.length}`
     );
     await sendDocument(chatId, result.jsonFile, "JSON с сырыми данными.");
-    await sendMessage(chatId, "Готово. CSV можно импортировать в WooCommerce: Products -> Import.");
+    await sendDocument(
+      chatId,
+      result.reportFile,
+      `Отчёт проверки: предупреждения у ${result.report.summary.productsWithWarnings} из ${result.report.summary.products} товаров.`
+    );
+    const customCount = result.report.summary.productsWithCustomOptions;
+    await sendMessage(
+      chatId,
+      [
+        "Готово. CSV можно импортировать в WooCommerce: Products -> Import.",
+        customCount
+          ? `У ${customCount} товаров условные опции превращены в нативные WooCommerce-вариации с допустимыми сочетаниями.`
+          : "Перед публикацией проверь scrape-report.json: в нём отмечены отсутствующие или сгенерированные данные.",
+      ].join("\n")
+    );
   } catch (error) {
     progressState.status = `Ошибка: ${error.message}`;
     await updateProgress(null, true);

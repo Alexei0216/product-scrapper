@@ -92,6 +92,7 @@ Then the bot will reply with:
 
 - `products.csv` ready for WooCommerce import.
 - `products.json` with raw collected product data.
+- `scrape-report.json` with every warning, generated SKU, custom form and failed page.
 
 If a source page exposes real product variants, the CSV contains a WooCommerce
 `variable` parent followed by its `variation` rows. Each variation keeps its own
@@ -99,6 +100,14 @@ SKU, option values, price, stock status, and (when supplied by the store) image.
 For Shopify stores this reads the product JSON embedded by the theme; for other
 stores it uses the same embedded-product/API fallback when it is present. A
 single-option product remains a normal `simple` WooCommerce product.
+
+Some storefronts add choices through a product-options app instead of real store
+variants. The scraper converts up to three such fields into native WooCommerce
+attributes and creates only the allowed `variation` rows. For example, a `Type`
+selection can enable a `Colour` field without creating colours for other types.
+The original option schema is also preserved in `products.json` and the CSV meta
+field `source_custom_options` for traceability. No WooCommerce plugin or admin
+configuration is required after importing the CSV.
 
 During scraping, the bot edits one progress message instead of sending a new message for every product.
 
@@ -180,6 +189,10 @@ The scraper is selector-free by default, but it uses several fallback layers:
 - Product-like JSON/API responses observed by Playwright while the page loads.
 - Product options and variants from embedded Shopify/generic product JSON, mapped
   to WooCommerce parent/variation CSV rows.
+- Conditional custom-option forms (including fields supplied by product-options
+  apps) with their dependency rules preserved as import metadata.
+- A completeness report, so protected, incomplete or non-native option data is
+  visible before an import instead of silently becoming a "perfect" product.
 - Scored price candidates, so current/schema prices beat old prices, delivery text, discounts, and installment text.
 - Confidence scoring for extracted products; low-confidence products are skipped instead of silently entering the CSV.
 - Optional debug artifacts for skipped/error pages.

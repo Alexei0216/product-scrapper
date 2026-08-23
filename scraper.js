@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const config = require("./config");
 const siteRules = require("./site-rules");
 const toCSV = require("./add-csv");
+const { createQualityReport } = require("./quality-report");
 
 function cleanText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
@@ -247,6 +248,38 @@ function normalizeVariants(rawVariants, rawOptions, url, fallbackImages) {
     values: unique(variants.map((variant) => variant.options[index]).filter(Boolean)),
   })).filter((option) => option.values.length);
   return { options, variants };
+}
+
+function normalizeCustomOptions(rawOptions, url) {
+  return (rawOptions || []).map((field) => {
+    const dependency = field?.dependency || {};
+    const conditions = (dependency.match_values || []).map((condition) => ({
+      option: cleanText(condition.element || condition.source || ""),
+      value: cleanText(condition.value || ""),
+      operator: cleanText(condition.operator || "equal") || "equal",
+    })).filter((condition) => condition.option && condition.value);
+    const optionValues = (field?.options || []).map((option) => {
+      const sourceImage = cleanText(option?.image || option?.image_url || "");
+      return {
+        name: cleanText(option?.name || option?.label || option),
+        // Some option apps use internal identifiers such as users/123/files/x.webp.
+        // Keep those identifiers but never turn them into a false product-page URL.
+        image: /^(https?:)?\/\//i.test(sourceImage) || sourceImage.startsWith("/")
+          ? normalizeImageUrl(sourceImage, url)
+          : "",
+        sourceImage,
+        price: cleanText(option?.price || option?.value || ""),
+      };
+    }).filter((option) => option.name);
+    return {
+      id: String(field?.id || ""),
+      name: cleanText(field?.label || field?.title || ""),
+      type: cleanText(field?.type || ""),
+      required: Boolean(field?.required),
+      values: optionValues,
+      dependency: conditions.length ? { match: dependency.match_type || "all", conditions } : null,
+    };
+  }).filter((option) => option.name && option.values.length);
 }
 
 async function delay(ms) {
@@ -770,6 +803,19 @@ async function extractProduct(page, url, options) {
       String(item.handle || "").replace(/^\/+|\/+$/g, "") && location.pathname.includes(String(item.handle).replace(/^\/+|\/+$/g, ""))
     ) || variantProducts[0] || {};
     const offers = Array.isArray(product.offers) ? product.offers[0] : product.offers || {};
+    const customOptionConfigs = Object.values(window._TC?.manualOptions || {});
+    // Fallback for themes where the option app's assignment has not executed yet.
+    // Its configuration is still present as JSON in the page source.
+    if (!customOptionConfigs.length) {
+      for (const script of document.scripts) {
+        const match = (script.textContent || "").match(/_TC\.manualOptions\[[^\]]+\]\s*=\s*(\{[\s\S]*?\});/);
+        if (!match) continue;
+        try {
+          customOptionConfigs.push(JSON.parse(match[1]));
+        } catch {}
+      }
+    }
+    const customOptionFields = customOptionConfigs.flatMap((config) => config?.fields || []);
     const priceCandidates = [
       { text: offers.price, source: "json-ld offers.price", score: 80 },
       { text: offers.lowPrice, source: "json-ld offers.lowPrice", score: 65 },
@@ -900,6 +946,7 @@ async function extractProduct(page, url, options) {
       categories: breadcrumbs.join(" > "),
       variants: variantProduct.variants || [],
       options: variantProduct.options || [],
+      customOptions: customOptionFields,
     };
   }, rule);
 
@@ -945,6 +992,7 @@ async function extractProduct(page, url, options) {
     url,
     images
   );
+  const customOptions = normalizeCustomOptions(raw.customOptions, url);
 
   const product = {
     sourceUrl: url,
@@ -957,11 +1005,13 @@ async function extractProduct(page, url, options) {
     images,
     options: variantData.options,
     variants: variantData.variants,
+    customOptions,
     extraction: {
       confidence: 0,
       apiCandidates: apiProducts.length,
       hasSiteRule: Object.keys(rule).length > 0,
       variantCount: variantData.variants.length,
+      customOptionCount: customOptions.length,
     },
   };
 
@@ -999,6 +1049,7 @@ async function scrape(input = {}) {
   const browser = await chromium.launch({ headless: true });
   const context = await setupFastContext(browser);
   const products = [];
+  const failedPages = [];
 
   try {
     const page = await context.newPage();
@@ -1076,6 +1127,7 @@ async function scrape(input = {}) {
               product.price ? "" : "missing price",
               product.confidence < 50 ? `low confidence ${product.confidence}` : "",
             ].filter(Boolean).join(", ") || "no reliable product data";
+            failedPages.push({ sourceUrl: url, status: "skipped", reason });
             await diagnostics?.savePage(productPage, url, "skip", { reason, product });
             await options.progress?.({
               stage: "skip",
@@ -1090,6 +1142,7 @@ async function scrape(input = {}) {
           }
         } catch (error) {
           errors += 1;
+          failedPages.push({ sourceUrl: url, status: "error", error: error.message });
           await diagnostics?.savePage(productPage, url, "error", { error: error.message });
           await options.progress?.({
             stage: "error",
@@ -1129,11 +1182,14 @@ async function scrape(input = {}) {
 
   const jsonFile = path.join(options.outputDir, "products.json");
   const csvFile = path.join(options.outputDir, "products.csv");
+  const reportFile = path.join(options.outputDir, "scrape-report.json");
 
   fs.writeFileSync(jsonFile, JSON.stringify(products, null, 2), "utf8");
   toCSV(products, { outputFile: csvFile, defaults: options.csvDefaults });
+  const report = createQualityReport(products, failedPages);
+  fs.writeFileSync(reportFile, JSON.stringify(report, null, 2), "utf8");
 
-  return { products, csvFile, jsonFile };
+  return { products, csvFile, jsonFile, reportFile, report };
 }
 
 module.exports = scrape;
@@ -1145,6 +1201,7 @@ module.exports._internals = {
   parsePriceValue,
   bestPrice,
   normalizeVariants,
+  normalizeCustomOptions,
   setupFastContext,
 };
 

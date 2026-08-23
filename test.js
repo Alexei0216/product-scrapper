@@ -7,9 +7,11 @@ const toCSV = require("./add-csv");
 const scrape = require("./scraper");
 const settingsStore = require("./settings-store");
 const config = require("./config");
+const { createQualityReport } = require("./quality-report");
 
 const { addPriceMarkup, normalizePrice } = toCSV._internals;
-const { autoSkuFromUrl, bestPrice, isLikelyProductUrl, normalizeUrl, normalizeVariants, parsePriceValue } = scrape._internals;
+const { customOptionVariants } = toCSV._internals;
+const { autoSkuFromUrl, bestPrice, isLikelyProductUrl, normalizeCustomOptions, normalizeUrl, normalizeVariants, parsePriceValue } = scrape._internals;
 
 assert.strictEqual(normalizePrice("1.234,56 EUR"), 1234.56);
 assert.strictEqual(normalizePrice("$1,234.56"), 1234.56);
@@ -77,6 +79,31 @@ assert.match(variantCsv, /"variation","CHILD-B"/);
 assert.match(variantCsv, /"PARENT-1","Colour","Black"/);
 assert.match(variantCsv, /"outofstock"/);
 
+const conditionalCsvFile = path.join(tempDir, "conditional-variants.csv");
+const conditionalProduct = {
+  sku: "TYPE-1",
+  name: "Conditional product",
+  price: "100",
+  customOptions: [
+    { name: "Type", values: [{ name: "Sport" }, { name: "Classic" }] },
+    {
+      name: "Colour",
+      values: [{ name: "Red", price: "5" }, { name: "Blue" }],
+      dependency: { match: "all", conditions: [{ option: "Type", value: "Sport", operator: "equal" }] },
+    },
+  ],
+};
+assert.deepStrictEqual(customOptionVariants(conditionalProduct).map((variant) => variant.options), [
+  ["Sport", "Red"],
+  ["Sport", "Blue"],
+  ["Classic", ""],
+]);
+toCSV([conditionalProduct], { outputFile: conditionalCsvFile, defaults: { priceMarkup: 0, stockMode: "instock" } });
+const conditionalCsv = fs.readFileSync(conditionalCsvFile, "utf8");
+assert.strictEqual((conditionalCsv.match(/"variation"/g) || []).length, 3);
+assert.match(conditionalCsv, /"variable","TYPE-1"/);
+assert.match(conditionalCsv, /"TYPE-1","Type","Sport","Colour","Red"/);
+
 assert.strictEqual(
   normalizeUrl("/product/demo#reviews", "https://example.com/shop/"),
   "https://example.com/product/demo"
@@ -121,6 +148,35 @@ assert.deepStrictEqual(
     options: [{ name: "Version", values: ["Race"] }, { name: "Chassis", values: ["E30"] }],
     variants: [{ id: "1", sku: "SHOPIFY-1", price: "99", options: ["Race", "E30"], available: true, image: "" }],
   }
+);
+
+const report = createQualityReport([
+  { sourceUrl: "https://example.com/p", name: "Example", price: "10", sku: "AUTO-123", images: [], variants: [], customOptions: [{}], confidence: 80 },
+]);
+assert.strictEqual(report.summary.productsWithWarnings, 1);
+assert.strictEqual(report.summary.productsWithCustomOptions, 1);
+assert.ok(report.products[0].warnings.includes("generated_parent_sku"));
+assert.ok(!report.products[0].warnings.includes("custom_options_require_woocommerce_extension"));
+assert.deepStrictEqual(
+  normalizeCustomOptions(
+    [{
+      id: 2,
+      type: "RadioImage",
+      label: "OG Knob color",
+      required: true,
+      options: [{ name: "Black", image: "/black.webp" }],
+      dependency: { match_type: "any", match_values: [{ element: "Knob style", value: "OG", operator: "equal" }] },
+    }],
+    "https://shop.example/products/demo"
+  ),
+  [{
+    id: "2",
+    name: "OG Knob color",
+    type: "RadioImage",
+    required: true,
+    values: [{ name: "Black", image: "https://shop.example/black.webp", sourceImage: "/black.webp", price: "" }],
+    dependency: { match: "any", conditions: [{ option: "Knob style", value: "OG", operator: "equal" }] },
+  }]
 );
 
 const settings = settingsStore.getSettings();
