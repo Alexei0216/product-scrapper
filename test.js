@@ -10,7 +10,7 @@ const config = require("./config");
 const { createQualityReport } = require("./quality-report");
 
 const { addPriceMarkup, normalizePrice } = toCSV._internals;
-const { customOptionVariants } = toCSV._internals;
+const { customOptionVariants, primaryCustomOptions } = toCSV._internals;
 const { autoSkuFromUrl, bestPrice, isLikelyProductUrl, normalizeCustomOptions, normalizeUrl, normalizeVariants, parsePriceValue } = scrape._internals;
 
 assert.strictEqual(normalizePrice("1.234,56 EUR"), 1234.56);
@@ -85,24 +85,24 @@ const conditionalProduct = {
   name: "Conditional product",
   price: "100",
   customOptions: [
-    { name: "Type", values: [{ name: "Sport" }, { name: "Classic" }] },
+    { name: "Knob style", values: [{ name: "OG" }, { name: "GRIP" }] },
     {
-      name: "Colour",
+      name: "OG Knob color",
       values: [{ name: "Red", price: "5" }, { name: "Blue" }],
-      dependency: { match: "all", conditions: [{ option: "Type", value: "Sport", operator: "equal" }] },
+      dependency: { match: "all", conditions: [{ option: "Knob style", value: "OG", operator: "equal" }] },
     },
   ],
 };
 assert.deepStrictEqual(customOptionVariants(conditionalProduct).map((variant) => variant.options), [
-  ["Sport", "Red"],
-  ["Sport", "Blue"],
-  ["Classic", ""],
+  ["OG", "Red"],
+  ["OG", "Blue"],
+  ["GRIP", ""],
 ]);
 toCSV([conditionalProduct], { outputFile: conditionalCsvFile, defaults: { priceMarkup: 0, stockMode: "instock" } });
 const conditionalCsv = fs.readFileSync(conditionalCsvFile, "utf8");
 assert.strictEqual((conditionalCsv.match(/"variation"/g) || []).length, 3);
 assert.match(conditionalCsv, /"variable","TYPE-1"/);
-assert.match(conditionalCsv, /"TYPE-1","Type","Sport","Colour","Red"/);
+assert.match(conditionalCsv, /"TYPE-1","Knob style","OG","OG Knob color","Red"/);
 
 const defaultTitleCsvFile = path.join(tempDir, "default-title-options.csv");
 const defaultTitleProduct = {
@@ -123,9 +123,26 @@ const defaultTitleProduct = {
 };
 toCSV([defaultTitleProduct], { outputFile: defaultTitleCsvFile, defaults: { priceMarkup: 0, stockMode: "instock" } });
 const defaultTitleCsv = fs.readFileSync(defaultTitleCsvFile, "utf8");
-assert.match(defaultTitleCsv, /"Attribute 4 name"/);
+assert.doesNotMatch(defaultTitleCsv, /"Attribute 4 name"/);
 assert.match(defaultTitleCsv, /"variable","DEFAULT-1"/);
-assert.match(defaultTitleCsv, /"DEFAULT-1","Mount","Standard","Finish","Black","Knob style","OG","OG Knob color","Black"/);
+assert.match(defaultTitleCsv, /"DEFAULT-1","Knob style","OG","OG Knob color","Black"/);
+
+assert.deepStrictEqual(
+  primaryCustomOptions({ customOptions: conditionalProduct.customOptions }).map((option) => option.name),
+  ["Knob style", "OG Knob color"]
+);
+assert.deepStrictEqual(
+  primaryCustomOptions({
+    customOptions: [
+      { name: "Bolt-on kit", values: [{ name: "No" }] },
+      { name: "Bolt-on kit chassis", values: [{ name: "E30" }] },
+      { name: "Knob style", values: [{ name: "OG" }] },
+      { name: "OG Knob color", values: [{ name: "Black" }], dependency: { conditions: [{ option: "Knob style" }] } },
+      { name: "Add ThermoShift knob?", values: [{ name: "Thank you" }] },
+    ],
+  }).map((option) => option.name),
+  ["Knob style", "OG Knob color"]
+);
 
 assert.strictEqual(
   normalizeUrl("/product/demo#reviews", "https://example.com/shop/"),

@@ -83,8 +83,23 @@ function productAttributes(product) {
     .filter((option) => option.values.length);
 }
 
+function primaryCustomOptions(product) {
+  const options = (product.customOptions || []).filter((option) => option.name && option.values?.length);
+  const styleOption = options.find((option) => /^knob\s+style$/i.test(option.name.trim()));
+  if (!styleOption) return [];
+
+  return options.filter((option) => {
+    if (option === styleOption) return true;
+    const isKnobColor = /knob.*color|color.*knob/i.test(option.name);
+    const dependsOnStyle = (option.dependency?.conditions || []).some(
+      (condition) => condition.option.toLowerCase() === styleOption.name.toLowerCase()
+    );
+    return isKnobColor && dependsOnStyle;
+  });
+}
+
 function customOptionAttributes(product) {
-  return (product.customOptions || [])
+  return primaryCustomOptions(product)
     .map((option) => ({
       name: option.name,
       values: (option.values || []).map((value) => value.name).filter(Boolean),
@@ -115,7 +130,7 @@ function customOptionIsVisible(option, selected) {
 }
 
 function customOptionVariants(product) {
-  const options = (product.customOptions || []).filter((option) => option.name && option.values?.length);
+  const options = primaryCustomOptions(product);
   if (!options.length) return [];
 
   const combinations = [];
@@ -302,5 +317,6 @@ module.exports._internals = {
   productAttributes,
   customOptionAttributes,
   customOptionVariants,
+  primaryCustomOptions,
   sourceCustomOptions,
 };

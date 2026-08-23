@@ -848,8 +848,10 @@ async function extractProduct(page, url, options) {
       text(document.body.innerText).match(/(?:SKU|Артикул|Referencia|Ref\.?|MPN)\s*[:#-]?\s*([A-Z0-9._-]{3,})/i)?.[1] ||
       "";
 
-    const imageValues = [
+    const structuredImageValues = [
       ...imageUrlsFromValue(product.image),
+      ...imageUrlsFromValue(variantProduct.image),
+      ...imageUrlsFromValue(variantProduct.images),
       meta('meta[property="og:image"]'),
       ...all(rule.imageSelector)
         .flatMap((node) => [
@@ -861,6 +863,10 @@ async function extractProduct(page, url, options) {
           node.getAttribute("data-original"),
           node.getAttribute("data-zoom-image"),
         ]),
+    ].flat();
+
+    const fallbackImageValues = [
+      ...structuredImageValues,
       ...Array.from(
         document.querySelectorAll(
           [
@@ -942,7 +948,7 @@ async function extractProduct(page, url, options) {
       sku: skuText,
       description: product.description || firstHtml(rule.descriptionSelector) || html(descriptionElement) || meta('meta[name="description"]'),
       shortDescription: firstText(rule.shortDescriptionSelector) || meta('meta[name="description"]'),
-      images: imageValues,
+      images: structuredImageValues.length ? structuredImageValues : fallbackImageValues,
       categories: breadcrumbs.join(" > "),
       variants: variantProduct.variants || [],
       options: variantProduct.options || [],
