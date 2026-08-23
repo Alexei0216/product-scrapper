@@ -93,6 +93,13 @@ Then the bot will reply with:
 - `products.csv` ready for WooCommerce import.
 - `products.json` with raw collected product data.
 
+If a source page exposes real product variants, the CSV contains a WooCommerce
+`variable` parent followed by its `variation` rows. Each variation keeps its own
+SKU, option values, price, stock status, and (when supplied by the store) image.
+For Shopify stores this reads the product JSON embedded by the theme; for other
+stores it uses the same embedded-product/API fallback when it is present. A
+single-option product remains a normal `simple` WooCommerce product.
+
 During scraping, the bot edits one progress message instead of sending a new message for every product.
 
 WooCommerce import path: `Products -> Import -> Upload CSV`.
@@ -171,6 +178,8 @@ The scraper is selector-free by default, but it uses several fallback layers:
 - URL and card heuristics to discover product links from archive pages.
 - Lazy archive support through auto-scroll and optional "load more" buttons.
 - Product-like JSON/API responses observed by Playwright while the page loads.
+- Product options and variants from embedded Shopify/generic product JSON, mapped
+  to WooCommerce parent/variation CSV rows.
 - Scored price candidates, so current/schema prices beat old prices, delivery text, discounts, and installment text.
 - Confidence scoring for extracted products; low-confidence products are skipped instead of silently entering the CSV.
 - Optional debug artifacts for skipped/error pages.

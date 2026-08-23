@@ -62,6 +62,27 @@ function stockValues(stockMode) {
   };
 }
 
+function attributeColumns(attributes) {
+  const columns = [];
+  for (let index = 0; index < 3; index += 1) {
+    const attribute = attributes[index] || {};
+    columns.push(attribute.name || "", (attribute.values || []).join(", "));
+  }
+  return columns;
+}
+
+function productAttributes(product) {
+  const variants = Array.isArray(product.variants) ? product.variants : [];
+  return (product.options || [])
+    .map((option, index) => ({
+      name: option.name || `Option ${index + 1}`,
+      values: option.values?.length
+        ? option.values
+        : [...new Set(variants.map((variant) => variant.options?.[index]).filter(Boolean))],
+    }))
+    .filter((option) => option.values.length);
+}
+
 function toCSV(products, options = {}) {
   const defaults = {
     ...config.csvDefaults,
@@ -82,16 +103,25 @@ function toCSV(products, options = {}) {
     "In stock?",
     "Backorders allowed?",
     "Stock status",
+    "Parent",
+    "Attribute 1 name",
+    "Attribute 1 value(s)",
+    "Attribute 2 name",
+    "Attribute 2 value(s)",
+    "Attribute 3 name",
+    "Attribute 3 value(s)",
     "taxonomy=product_brand",
     "taxonomy=car_brand",
     "taxonomy=car_model",
   ];
 
-  const rows = products.map((product) => {
+  const rows = products.flatMap((product) => {
     const text = productText(product);
     const stock = stockValues(defaults.stockMode);
+    const attributes = productAttributes(product);
+    const variants = Array.isArray(product.variants) ? product.variants : [];
 
-    return [
+    if (!variants.length) return [[
       "simple",
       product.sku,
       product.name,
@@ -104,10 +134,59 @@ function toCSV(products, options = {}) {
       stock.inStock,
       stock.backorders,
       stock.status,
+      "",
+      ...attributeColumns([]),
+      defaults.productBrand,
+      defaults.carBrand,
+      defaults.carModel,
+    ]];
+
+    const parentRow = [
+      "variable",
+      product.sku,
+      product.name,
+      "1",
+      product.shortDescription || text,
+      text,
+      "",
+      defaults.category || product.categories,
+      Array.isArray(product.images) ? product.images.join(", ") : "",
+      stock.inStock,
+      stock.backorders,
+      stock.status,
+      "",
+      ...attributeColumns(attributes),
       defaults.productBrand,
       defaults.carBrand,
       defaults.carModel,
     ];
+    const variantRows = variants.map((variant) => {
+      const variantStock = variant.available === false ? stockValues("outofstock") : stock;
+      const variantAttributes = attributes.map((attribute, index) => ({
+        name: attribute.name,
+        values: [variant.options?.[index] || ""].filter(Boolean),
+      }));
+      return [
+        "variation",
+        variant.sku,
+        product.name,
+        "1",
+        "",
+        "",
+        addPriceMarkup(variant.price || product.price, defaults.priceMarkup),
+        "",
+        variant.image || "",
+        variantStock.inStock,
+        variantStock.backorders,
+        variantStock.status,
+        product.sku,
+        ...attributeColumns(variantAttributes),
+        "",
+        "",
+        "",
+      ];
+    });
+    return [parentRow, ...variantRows];
   });
 
   const csv = [header, ...rows]
@@ -125,4 +204,5 @@ module.exports._internals = {
   addPriceMarkup,
   normalizePrice,
   stockValues,
+  productAttributes,
 };

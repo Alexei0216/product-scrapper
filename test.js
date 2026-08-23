@@ -9,7 +9,7 @@ const settingsStore = require("./settings-store");
 const config = require("./config");
 
 const { addPriceMarkup, normalizePrice } = toCSV._internals;
-const { autoSkuFromUrl, bestPrice, isLikelyProductUrl, normalizeUrl, parsePriceValue } = scrape._internals;
+const { autoSkuFromUrl, bestPrice, isLikelyProductUrl, normalizeUrl, normalizeVariants, parsePriceValue } = scrape._internals;
 
 assert.strictEqual(normalizePrice("1.234,56 EUR"), 1234.56);
 assert.strictEqual(normalizePrice("$1,234.56"), 1234.56);
@@ -55,6 +55,28 @@ assert.match(csv, /"taxonomy=car_model"/);
 assert.match(csv, /"E46"/);
 assert.match(csv, /"0\.00"/);
 
+const variantCsvFile = path.join(tempDir, "variants.csv");
+toCSV(
+  [{
+    sku: "PARENT-1",
+    name: "Variable product",
+    price: "10",
+    description: "Description",
+    images: ["https://example.com/main.jpg"],
+    options: [{ name: "Colour", values: ["Black", "Silver"] }],
+    variants: [
+      { sku: "CHILD-B", price: "10", options: ["Black"], available: true, image: "https://example.com/black.jpg" },
+      { sku: "CHILD-S", price: "12", options: ["Silver"], available: false },
+    ],
+  }],
+  { outputFile: variantCsvFile, defaults: { priceMarkup: 0, stockMode: "instock" } }
+);
+const variantCsv = fs.readFileSync(variantCsvFile, "utf8");
+assert.match(variantCsv, /"variable","PARENT-1"/);
+assert.match(variantCsv, /"variation","CHILD-B"/);
+assert.match(variantCsv, /"PARENT-1","Colour","Black"/);
+assert.match(variantCsv, /"outofstock"/);
+
 assert.strictEqual(
   normalizeUrl("/product/demo#reviews", "https://example.com/shop/"),
   "https://example.com/product/demo"
@@ -87,6 +109,18 @@ assert.strictEqual(
 assert.notStrictEqual(
   autoSkuFromUrl("https://pmcmotorsport-shop.com/product-spa-2534-STAGE-3.html"),
   autoSkuFromUrl("https://pmcmotorsport-shop.com/product-spa-2561-Stage-2.html")
+);
+assert.deepStrictEqual(
+  normalizeVariants(
+    [{ id: 1, sku: "SHOPIFY-1", option1: "Race", option2: "E30", price: 9900, available: true }],
+    [{ name: "Version" }, { name: "Chassis" }],
+    "https://shop.example/products/demo",
+    []
+  ),
+  {
+    options: [{ name: "Version", values: ["Race"] }, { name: "Chassis", values: ["E30"] }],
+    variants: [{ id: "1", sku: "SHOPIFY-1", price: "99", options: ["Race", "E30"], available: true, image: "" }],
+  }
 );
 
 const settings = settingsStore.getSettings();

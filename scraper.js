@@ -214,6 +214,41 @@ function autoSkuFromUrl(url) {
   return `AUTO-${crypto.createHash("sha1").update(url).digest("hex").slice(0, 12).toUpperCase()}`;
 }
 
+function autoVariantSku(url, id, position) {
+  return `AUTO-V-${crypto.createHash("sha1").update(`${url}:${id || position}`).digest("hex").slice(0, 12).toUpperCase()}`;
+}
+
+function normalizeVariants(rawVariants, rawOptions, url, fallbackImages) {
+  const optionNames = (rawOptions || [])
+    .map((option, index) => cleanText(option?.name || option || `Option ${index + 1}`))
+    .filter(Boolean)
+    .slice(0, 3);
+  const variants = (rawVariants || []).map((variant, position) => {
+    const values = Array.isArray(variant?.options)
+      ? variant.options
+      : [variant?.option1, variant?.option2, variant?.option3].filter((value) => value !== undefined && value !== null);
+    const imageValue = variant?.featured_image?.src || variant?.featured_image || variant?.image?.src || variant?.image || "";
+    // Shopify's product JSON stores prices as integer cents (e.g. 9900 = €99.00).
+    const isShopifyVariant = Object.prototype.hasOwnProperty.call(variant || {}, "option1") && typeof variant?.price === "number";
+    const price = isShopifyVariant ? String(variant.price / 100) : cleanText(variant?.price || variant?.compare_at_price || "");
+    return {
+      id: String(variant?.id || ""),
+      sku: cleanText(variant?.sku) || autoVariantSku(url, variant?.id, position),
+      price,
+      options: values.map(cleanText).slice(0, 3),
+      available: variant?.available ?? variant?.availableForSale ?? variant?.in_stock ?? true,
+      image: normalizeImageUrl(typeof imageValue === "string" ? imageValue : imageValue?.url, url) || fallbackImages?.[0] || "",
+    };
+  }).filter((variant) => variant.options.some(Boolean) || variant.price || variant.id);
+
+  if (!variants.length) return { options: [], variants: [] };
+  const options = optionNames.map((name, index) => ({
+    name,
+    values: unique(variants.map((variant) => variant.options[index]).filter(Boolean)),
+  })).filter((option) => option.values.length);
+  return { options, variants };
+}
+
 async function delay(ms) {
   if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -674,6 +709,7 @@ async function extractProduct(page, url, options) {
     const firstText = (selector) => text(one(selector)?.textContent);
     const firstHtml = (selector) => html(one(selector));
     const jsonProducts = [];
+    const variantProducts = [];
     const imageUrlsFromValue = (value) => {
       if (!value) return [];
       if (typeof value === "string") return [value];
@@ -704,7 +740,35 @@ async function extractProduct(page, url, options) {
       } catch {}
     }
 
+    // Shopify themes usually expose the complete product (including every variant)
+    // in an application/json script.  The generic walk also covers other storefronts
+    // that embed an equivalent product object in the page.
+    for (const script of document.querySelectorAll('script[type="application/json"], script[type="application/ld+json"], script[data-product-json]')) {
+      try {
+        const parsed = JSON.parse(script.textContent || "{}");
+        const stack = Array.isArray(parsed) ? [...parsed] : [parsed];
+        let scanned = 0;
+        while (stack.length && scanned < 2000) {
+          scanned += 1;
+          const item = stack.shift();
+          if (!item || typeof item !== "object") continue;
+          if (Array.isArray(item.variants) && item.variants.length && (item.title || item.name || item.handle || item.id)) {
+            variantProducts.push(item);
+          }
+          for (const value of Object.values(item)) {
+            if (value && typeof value === "object") {
+              if (Array.isArray(value)) stack.push(...value.slice(0, 100));
+              else stack.push(value);
+            }
+          }
+        }
+      } catch {}
+    }
+
     const product = jsonProducts[0] || {};
+    const variantProduct = variantProducts.find((item) =>
+      String(item.handle || "").replace(/^\/+|\/+$/g, "") && location.pathname.includes(String(item.handle).replace(/^\/+|\/+$/g, ""))
+    ) || variantProducts[0] || {};
     const offers = Array.isArray(product.offers) ? product.offers[0] : product.offers || {};
     const priceCandidates = [
       { text: offers.price, source: "json-ld offers.price", score: 80 },
@@ -834,6 +898,8 @@ async function extractProduct(page, url, options) {
       shortDescription: firstText(rule.shortDescriptionSelector) || meta('meta[name="description"]'),
       images: imageValues,
       categories: breadcrumbs.join(" > "),
+      variants: variantProduct.variants || [],
+      options: variantProduct.options || [],
     };
   }, rule);
 
@@ -872,6 +938,14 @@ async function extractProduct(page, url, options) {
       .filter((imageUrl) => !/placeholder|loading|spinner|logo|icon|sprite/i.test(imageUrl))
   )).slice(0, 30);
 
+  const apiVariantSource = apiProducts.find((item) => Array.isArray(item.variants) && item.variants.length) || {};
+  const variantData = normalizeVariants(
+    raw.variants?.length ? raw.variants : apiVariantSource.variants,
+    raw.options?.length ? raw.options : apiVariantSource.options,
+    url,
+    images
+  );
+
   const product = {
     sourceUrl: url,
     name: cleanText(raw.name) || apiName,
@@ -881,10 +955,13 @@ async function extractProduct(page, url, options) {
     shortDescription: cleanText(raw.shortDescription),
     categories: cleanText(raw.categories),
     images,
+    options: variantData.options,
+    variants: variantData.variants,
     extraction: {
       confidence: 0,
       apiCandidates: apiProducts.length,
       hasSiteRule: Object.keys(rule).length > 0,
+      variantCount: variantData.variants.length,
     },
   };
 
@@ -1067,6 +1144,7 @@ module.exports._internals = {
   normalizeUrl,
   parsePriceValue,
   bestPrice,
+  normalizeVariants,
   setupFastContext,
 };
 
