@@ -104,6 +104,29 @@ assert.strictEqual((conditionalCsv.match(/"variation"/g) || []).length, 3);
 assert.match(conditionalCsv, /"variable","TYPE-1"/);
 assert.match(conditionalCsv, /"TYPE-1","Type","Sport","Colour","Red"/);
 
+const defaultTitleCsvFile = path.join(tempDir, "default-title-options.csv");
+const defaultTitleProduct = {
+  sku: "DEFAULT-1",
+  name: "Default title product",
+  price: "50",
+  variants: [{ sku: "SHOPIFY-DEFAULT", price: "50", options: ["Default Title"] }],
+  customOptions: [
+    { name: "Mount", values: [{ name: "Standard" }] },
+    { name: "Finish", values: [{ name: "Black" }] },
+    { name: "Knob style", values: [{ name: "OG" }] },
+    {
+      name: "OG Knob color",
+      values: [{ name: "Black" }, { name: "Yellow" }],
+      dependency: { match: "all", conditions: [{ option: "Knob style", value: "OG", operator: "equal" }] },
+    },
+  ],
+};
+toCSV([defaultTitleProduct], { outputFile: defaultTitleCsvFile, defaults: { priceMarkup: 0, stockMode: "instock" } });
+const defaultTitleCsv = fs.readFileSync(defaultTitleCsvFile, "utf8");
+assert.match(defaultTitleCsv, /"Attribute 4 name"/);
+assert.match(defaultTitleCsv, /"variable","DEFAULT-1"/);
+assert.match(defaultTitleCsv, /"DEFAULT-1","Mount","Standard","Finish","Black","Knob style","OG","OG Knob color","Black"/);
+
 assert.strictEqual(
   normalizeUrl("/product/demo#reviews", "https://example.com/shop/"),
   "https://example.com/product/demo"

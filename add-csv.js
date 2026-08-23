@@ -62,9 +62,9 @@ function stockValues(stockMode) {
   };
 }
 
-function attributeColumns(attributes) {
+function attributeColumns(attributes, count = 3) {
   const columns = [];
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < count; index += 1) {
     const attribute = attributes[index] || {};
     columns.push(attribute.name || "", (attribute.values || []).join(", "));
   }
@@ -85,7 +85,6 @@ function productAttributes(product) {
 
 function customOptionAttributes(product) {
   return (product.customOptions || [])
-    .slice(0, 3)
     .map((option) => ({
       name: option.name,
       values: (option.values || []).map((value) => value.name).filter(Boolean),
@@ -116,7 +115,7 @@ function customOptionIsVisible(option, selected) {
 }
 
 function customOptionVariants(product) {
-  const options = (product.customOptions || []).slice(0, 3).filter((option) => option.name && option.values?.length);
+  const options = (product.customOptions || []).filter((option) => option.name && option.values?.length);
   if (!options.length) return [];
 
   const combinations = [];
@@ -164,12 +163,22 @@ function sourceCustomOptions(product) {
   return options.length ? JSON.stringify(options) : "";
 }
 
+function isPlaceholderVariant(variant) {
+  return variant?.options?.length === 1 && /^default title$/i.test(String(variant.options[0] || "").trim());
+}
+
 function toCSV(products, options = {}) {
   const defaults = {
     ...config.csvDefaults,
     ...(options.defaults || {}),
   };
   const outputFile = options.outputFile || path.resolve("products.csv");
+  const productAttributeSets = products.map((product) => {
+    const sourceVariants = (Array.isArray(product.variants) ? product.variants : [])
+      .filter((variant) => !isPlaceholderVariant(variant));
+    return sourceVariants.length ? productAttributes(product) : customOptionAttributes(product);
+  });
+  const attributeCount = Math.max(3, ...productAttributeSets.map((attributes) => attributes.length));
 
   const header = [
     "Type",
@@ -185,12 +194,10 @@ function toCSV(products, options = {}) {
     "Backorders allowed?",
     "Stock status",
     "Parent",
-    "Attribute 1 name",
-    "Attribute 1 value(s)",
-    "Attribute 2 name",
-    "Attribute 2 value(s)",
-    "Attribute 3 name",
-    "Attribute 3 value(s)",
+    ...Array.from({ length: attributeCount }, (_, index) => [
+      `Attribute ${index + 1} name`,
+      `Attribute ${index + 1} value(s)`,
+    ]).flat(),
     "Meta: source_custom_options",
     "Meta: source_url",
     "taxonomy=product_brand",
@@ -201,7 +208,8 @@ function toCSV(products, options = {}) {
   const rows = products.flatMap((product) => {
     const text = productText(product);
     const stock = stockValues(defaults.stockMode);
-    const sourceVariants = Array.isArray(product.variants) ? product.variants : [];
+    const sourceVariants = (Array.isArray(product.variants) ? product.variants : [])
+      .filter((variant) => !isPlaceholderVariant(variant));
     const generatedVariants = customOptionVariants(product);
     const variants = sourceVariants.length ? sourceVariants : generatedVariants;
     const attributes = sourceVariants.length ? productAttributes(product) : customOptionAttributes(product);
@@ -220,7 +228,7 @@ function toCSV(products, options = {}) {
       stock.backorders,
       stock.status,
       "",
-      ...attributeColumns([]),
+      ...attributeColumns([], attributeCount),
       sourceCustomOptions(product),
       product.sourceUrl || "",
       defaults.productBrand,
@@ -242,7 +250,7 @@ function toCSV(products, options = {}) {
       stock.backorders,
       stock.status,
       "",
-      ...attributeColumns(attributes),
+      ...attributeColumns(attributes, attributeCount),
       sourceCustomOptions(product),
       product.sourceUrl || "",
       defaults.productBrand,
@@ -269,12 +277,8 @@ function toCSV(products, options = {}) {
         variantStock.backorders,
         variantStock.status,
         product.sku,
-        ...attributeColumns(variantAttributes),
-        "",
-        "",
-        "",
-        "",
-        "",
+        ...attributeColumns(variantAttributes, attributeCount),
+        ...Array(5).fill(""),
       ];
     });
     return [parentRow, ...variantRows];
